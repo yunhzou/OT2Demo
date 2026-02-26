@@ -30,7 +30,7 @@ class SSHClient:
         config = paramiko.config.SSHConfig()
         with open(ssh_config_file) as f:
             config.parse(f)
-        print(config.lookup(self.host_alias))
+        # print(config.lookup(self.host_alias))
         return config.lookup(self.host_alias)
 
     def connect(self):
@@ -87,22 +87,4 @@ class SSHClient:
         if self.ssh_client is not None:
             self.ssh_client.close()
 
-if __name__ == "__main__":
-    # Instantiate and connect with the private key
-    ssh_client = SSHClient(
-        hostname="169.254.195.156",
-        username="root",
-        key_file_path="ot2_ssh_key"  # Path to your private key file
-    )
-    ssh_client.connect()
 
-    # Send each line of code to the Python terminal
-    ssh_client.invoke("import opentrons.execute")
-    ssh_client.invoke("protocol = opentrons.execute.get_protocol_api('2.11')")
-    output = ssh_client.invoke("protocol.home()")
-
-    # Print the output of the `protocol.home()` command
-    print("Output of protocol.home():", output)
-
-    # Close the session
-    ssh_client.close()
