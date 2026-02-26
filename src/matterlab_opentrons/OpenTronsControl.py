@@ -62,6 +62,13 @@ class OpenTrons:
             return False
         raise ValueError(f"Expected bool-like SSH response, got: {value!r}")
 
+    def _py_repr(self, value):
+        return "None" if value is None else repr(value)
+
+    def _format_kwargs(self, **kwargs) -> str:
+        parts = [f"{key} = {self._py_repr(value)}" for key, value in kwargs.items() if value is not None]
+        return ", ".join(parts)
+
     def _init_low_level_hardware(self) -> None:
         """Initialize low-level hardware/gripper handles in the remote interpreter."""
         self.invoke("hardware = protocol._core_get_hardware()")
@@ -160,6 +167,27 @@ class OpenTrons:
     def home(self):
         self.invoke("protocol.home()")
 
+    @flow
+    def comment(self, message: str):
+        self.invoke(f"protocol.comment({self._py_repr(message)})")
+
+    @flow
+    def set_rail_lights(self, on: bool = True):
+        self.invoke(f"protocol.set_rail_lights({self._py_repr(on)})")
+
+    @flow
+    def get_rail_lights(self):
+        return self._invoke_bool("protocol.rail_lights_on")
+
+    @flow
+    def set_max_speed(self, axis: str, speed: float):
+        # axis examples: 'X', 'Y', 'Z', 'A'
+        self.invoke(f"protocol.max_speeds[{self._py_repr(axis)}] = {speed}")
+
+    @flow
+    def clear_max_speed(self, axis: str):
+        self.invoke(f"protocol.max_speeds[{self._py_repr(axis)}] = None")
+
     @flow 
     def well_diameter(self, labware_nickname: str, position: str):
         return self._invoke_float(f"{labware_nickname}['{position}'].diameter")
@@ -206,34 +234,153 @@ class OpenTrons:
         self.invoke(f"{pip_name}.move_to(location = location)")
 
     @flow
+    def move_to_pip_advanced(
+        self,
+        pip_name: str,
+        speed: float = None,
+        force_direct: bool = None,
+        minimum_z_height: float = None,
+    ):
+        kwargs = self._format_kwargs(
+            location="__LOCATION_SENTINEL__",
+            speed=speed,
+            force_direct=force_direct,
+            minimum_z_height=minimum_z_height,
+        )
+        kwargs = kwargs.replace("'__LOCATION_SENTINEL__'", "location")
+        self.invoke(f"{pip_name}.move_to({kwargs})")
+
+    @flow
     def pick_up_tip(self, pip_name: str):
         self.invoke(f"{pip_name}.pick_up_tip(location = location)")
+
+    @flow
+    def pick_up_tip_advanced(
+        self,
+        pip_name: str,
+        location: bool = True,
+        presses: int = None,
+        increment: float = None,
+        prep_after: bool = None,
+    ):
+        kwargs = self._format_kwargs(
+            location="__LOCATION_SENTINEL__" if location else None,
+            presses=presses,
+            increment=increment,
+            prep_after=prep_after,
+        )
+        kwargs = kwargs.replace("'__LOCATION_SENTINEL__'", "location")
+        self.invoke(f"{pip_name}.pick_up_tip({kwargs})")
 
     @flow
     def return_tip(self, pip_name: str):
         self.invoke(f"{pip_name}.return_tip()")
 
     @flow
+    def return_tip_advanced(self, pip_name: str, home_after: bool = None):
+        kwargs = self._format_kwargs(home_after=home_after)
+        self.invoke(f"{pip_name}.return_tip({kwargs})" if kwargs else f"{pip_name}.return_tip()")
+
+    @flow
     def drop_tip(self, pip_name: str):
         self.invoke(f"{pip_name}.drop_tip()")
+
+    @flow
+    def drop_tip_advanced(self, pip_name: str, location: bool = False, home_after: bool = None):
+        kwargs = self._format_kwargs(
+            location="__LOCATION_SENTINEL__" if location else None,
+            home_after=home_after,
+        )
+        kwargs = kwargs.replace("'__LOCATION_SENTINEL__'", "location")
+        self.invoke(f"{pip_name}.drop_tip({kwargs})" if kwargs else f"{pip_name}.drop_tip()")
 
     @flow
     def prepare_aspirate(self, pip_name: str):
         self.invoke(f"{pip_name}.prepare_to_aspirate()")
 
     @flow
-    def aspirate(self, pip_name: str, volume: float):
-        self.invoke(f"{pip_name}.aspirate(volume = {volume}, location = location)")
+    def aspirate(
+        self,
+        pip_name: str,
+        volume: float = None,
+        rate: float = 1.0,
+        flow_rate: float = None,
+        movement_delay: float = None,
+    ):
+        kwargs = self._format_kwargs(
+            volume=volume,
+            location="__LOCATION_SENTINEL__",
+            rate=rate,
+            flow_rate=flow_rate,
+            movement_delay=movement_delay,
+        )
+        kwargs = kwargs.replace("'__LOCATION_SENTINEL__'", "location")
+        self.invoke(f"{pip_name}.aspirate({kwargs})")
 
     @flow
-    def dispense(self, pip_name: str, volume: float, push_out: float = None):
-        self.invoke(f"{pip_name}.dispense(volume = {volume}, location = location, push_out = {str(push_out)})")
+    def dispense(
+        self,
+        pip_name: str,
+        volume: float = None,
+        push_out: float = None,
+        rate: float = 1.0,
+        flow_rate: float = None,
+        movement_delay: float = None,
+    ):
+        kwargs = self._format_kwargs(
+            volume=volume,
+            location="__LOCATION_SENTINEL__",
+            rate=rate,
+            push_out=push_out,
+            flow_rate=flow_rate,
+            movement_delay=movement_delay,
+        )
+        kwargs = kwargs.replace("'__LOCATION_SENTINEL__'", "location")
+        self.invoke(f"{pip_name}.dispense({kwargs})")
 
     @flow
-    def touch_tip(self, pip_name: str, labware_nickname: str, position: str, radius: float = 1.0, v_offset: float = -1.0):
+    def air_gap(
+        self,
+        pip_name: str,
+        volume: float,
+        height: float = None,
+        in_place: bool = None,
+        rate: float = 1.0,
+        flow_rate: float = None,
+    ):
+        kwargs = self._format_kwargs(
+            volume=volume,
+            height=height,
+            in_place=in_place,
+            rate=rate,
+            flow_rate=flow_rate,
+        )
+        self.invoke(f"{pip_name}.air_gap({kwargs})")
+
+    @flow
+    def mix(self, pip_name: str, repetitions: int, volume: float = None, rate: float = 1.0):
+        kwargs = self._format_kwargs(
+            repetitions=repetitions,
+            volume=volume,
+            location="__LOCATION_SENTINEL__",
+            rate=rate,
+        )
+        kwargs = kwargs.replace("'__LOCATION_SENTINEL__'", "location")
+        self.invoke(f"{pip_name}.mix({kwargs})")
+
+    @flow
+    def touch_tip(
+        self,
+        pip_name: str,
+        labware_nickname: str,
+        position: str,
+        radius: float = 1.0,
+        v_offset: float = -1.0,
+        speed: float = 60.0,
+    ):
         self.invoke(
             f"{pip_name}.touch_tip({labware_nickname}['{position}'], "
-            f"radius = {radius}, v_offset = {v_offset})"
+            f"radius = {radius}, v_offset = {v_offset}, speed = {speed})"
         )
 
     @flow
@@ -241,8 +388,84 @@ class OpenTrons:
         self.invoke(f"{pip_name}.blow_out(location = location)")
 
     @flow
+    def blow_out_in_place(self, pip_name: str):
+        self.invoke(f"{pip_name}.blow_out()")
+
+    @flow
     def set_speed(self, pip_name: str, speed: float):
         self.invoke(f"{pip_name}.default_speed = {speed}")
+
+    @flow
+    def set_flow_rate(
+        self,
+        pip_name: str,
+        aspirate: float = None,
+        dispense: float = None,
+        blow_out: float = None,
+    ):
+        if aspirate is not None:
+            self.invoke(f"{pip_name}.flow_rate.aspirate = {aspirate}")
+        if dispense is not None:
+            self.invoke(f"{pip_name}.flow_rate.dispense = {dispense}")
+        if blow_out is not None:
+            self.invoke(f"{pip_name}.flow_rate.blow_out = {blow_out}")
+
+    @flow
+    def get_flow_rate(self, pip_name: str):
+        aspirate = self._invoke_float(f"{pip_name}.flow_rate.aspirate")
+        dispense = self._invoke_float(f"{pip_name}.flow_rate.dispense")
+        blow_out = self._invoke_float(f"{pip_name}.flow_rate.blow_out")
+        return {"aspirate": aspirate, "dispense": dispense, "blow_out": blow_out}
+
+    @flow
+    def set_plunger_speed(
+        self,
+        pip_name: str,
+        aspirate: float = None,
+        dispense: float = None,
+        blow_out: float = None,
+    ):
+        # Legacy-style plunger speed properties; may be unavailable on newer API contexts.
+        if aspirate is not None:
+            self.invoke(f"{pip_name}.speed.aspirate = {aspirate}")
+        if dispense is not None:
+            self.invoke(f"{pip_name}.speed.dispense = {dispense}")
+        if blow_out is not None:
+            self.invoke(f"{pip_name}.speed.blow_out = {blow_out}")
+
+    @flow
+    def set_well_bottom_clearance(
+        self,
+        pip_name: str,
+        aspirate: float = None,
+        dispense: float = None,
+    ):
+        if aspirate is not None:
+            self.invoke(f"{pip_name}.well_bottom_clearance.aspirate = {aspirate}")
+        if dispense is not None:
+            self.invoke(f"{pip_name}.well_bottom_clearance.dispense = {dispense}")
+
+    @flow
+    def get_well_bottom_clearance(self, pip_name: str):
+        aspirate = self._invoke_float(f"{pip_name}.well_bottom_clearance.aspirate")
+        dispense = self._invoke_float(f"{pip_name}.well_bottom_clearance.dispense")
+        return {"aspirate": aspirate, "dispense": dispense}
+
+    @flow
+    def reset_tipracks(self, pip_name: str):
+        self.invoke(f"{pip_name}.reset_tipracks()")
+
+    @flow
+    def has_tip(self, pip_name: str):
+        return self._invoke_bool(f"{pip_name}.has_tip")
+
+    @flow
+    def current_volume(self, pip_name: str):
+        return self._invoke_float(f"{pip_name}.current_volume")
+
+    @flow
+    def set_starting_tip(self, pip_name: str, tiprack_nickname: str, position: str):
+        self.invoke(f"{pip_name}.starting_tip = {tiprack_nickname}['{position}']")
     
     @flow
     def delay(self, seconds: float = 0, minutes: float = 0):
@@ -329,18 +552,46 @@ class OpenTrons:
     @flow
     def hs_latch_close(self, nickname: str):
         self.invoke(f"{nickname}.close_labware_latch()")
+
+    @flow
+    def hs_set_and_wait_shake_speed(self, nickname: str, rpm: int):
+        self.invoke(f"{nickname}.set_and_wait_for_shake_speed(rpm = {rpm})")
+
+    @flow
+    def hs_deactivate_shaker(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate_shaker()")
+
+    @flow
+    def hs_set_and_wait_temperature(self, nickname: str, celsius: float):
+        self.invoke(f"{nickname}.set_and_wait_for_temperature(celsius = {celsius})")
+
+    @flow
+    def hs_set_target_temperature(self, nickname: str, celsius: float):
+        self.invoke(f"{nickname}.set_target_temperature(celsius = {celsius})")
+
+    @flow
+    def hs_wait_for_temperature(self, nickname: str):
+        self.invoke(f"{nickname}.wait_for_temperature()")
+
+    @flow
+    def hs_deactivate_heater(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate_heater()")
+
+    @flow
+    def hs_deactivate(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate()")
     
     @flow
     def set_rpm(self, nickname: str, rpm: int):
         if rpm in range(200, 3000):
-            self.invoke(f"{nickname}.set_and_wait_for_shake_speed(rpm={rpm})")
+            self.invoke(f"{nickname}.set_and_wait_for_shake_speed(rpm = {rpm})")
         else:
             self.invoke(f"{nickname}.deactivate_shaker()")
     
     @flow
     def set_temp(self, nickname: str, temp: float):
         if temp in range(27, 95):
-            self.invoke(f"{nickname}.set_and_wait_for_temperature(temp={temp})")
+            self.invoke(f"{nickname}.set_and_wait_for_temperature(celsius = {temp})")
         else:
             self.invoke(f"{nickname}.deactivate_heater()")
 
@@ -351,6 +602,78 @@ class OpenTrons:
     @flow
     def get_temp(self, nickname: str):
         return self.invoke(f"{nickname}.current_temperature")   
+
+    @flow
+    def tempmod_set_temperature(self, nickname: str, celsius: float):
+        self.invoke(f"{nickname}.set_temperature(celsius = {celsius})")
+
+    @flow
+    def tempmod_await_temperature(self, nickname: str):
+        self.invoke(f"{nickname}.await_temperature()")
+
+    @flow
+    def tempmod_deactivate(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate()")
+
+    @flow
+    def magmod_engage(self, nickname: str, height_from_base: float = None, offset: float = None):
+        kwargs = self._format_kwargs(height_from_base=height_from_base, offset=offset)
+        self.invoke(f"{nickname}.engage({kwargs})" if kwargs else f"{nickname}.engage()")
+
+    @flow
+    def magmod_disengage(self, nickname: str):
+        self.invoke(f"{nickname}.disengage()")
+
+    @flow
+    def thermocycler_open_lid(self, nickname: str):
+        self.invoke(f"{nickname}.open_lid()")
+
+    @flow
+    def thermocycler_close_lid(self, nickname: str):
+        self.invoke(f"{nickname}.close_lid()")
+
+    @flow
+    def thermocycler_open_labware_latch(self, nickname: str):
+        self.invoke(f"{nickname}.open_labware_latch()")
+
+    @flow
+    def thermocycler_close_labware_latch(self, nickname: str):
+        self.invoke(f"{nickname}.close_labware_latch()")
+
+    @flow
+    def thermocycler_set_block_temperature(
+        self,
+        nickname: str,
+        temperature: float,
+        hold_time_seconds: float = None,
+        hold_time_minutes: float = None,
+        block_max_volume: float = None,
+        ramp_rate: float = None,
+    ):
+        kwargs = self._format_kwargs(
+            temperature=temperature,
+            hold_time_seconds=hold_time_seconds,
+            hold_time_minutes=hold_time_minutes,
+            block_max_volume=block_max_volume,
+            ramp_rate=ramp_rate,
+        )
+        self.invoke(f"{nickname}.set_block_temperature({kwargs})")
+
+    @flow
+    def thermocycler_set_lid_temperature(self, nickname: str, temperature: float):
+        self.invoke(f"{nickname}.set_lid_temperature(temperature = {temperature})")
+
+    @flow
+    def thermocycler_deactivate_block(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate_block()")
+
+    @flow
+    def thermocycler_deactivate_lid(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate_lid()")
+
+    @flow
+    def thermocycler_deactivate(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate()")
 
     @flow
     def remove_labware(self, labware_nickname: str):
