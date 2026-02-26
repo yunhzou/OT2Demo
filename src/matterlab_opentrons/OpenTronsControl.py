@@ -1,25 +1,30 @@
-from prefect import flow,task,serve
-from .sshclient import SSHClient
 import os
-import time
-from pathlib import Path
-from typing import Dict, Union
 import json
+from pathlib import Path
+from typing import Dict
+
+from prefect import flow
+
+from .sshclient import SSHClient
+
+
+PROTOCOL_API_VERSION = "2.21"
 
 
 class OpenTrons:
-    def __init__(self, host_alias:str = None, password="", simulation=False):
+    """Thin SSH-backed wrapper for streaming Opentrons Python commands."""
+
+    def __init__(self, host_alias: str = None, password: str = "", simulation: bool = False):
         self._connect(host_alias, password)
         self._get_protocol(simulation)
 
-    def _connect(self, host_alias:str = None, password=""):
-        
+    def _connect(self, host_alias: str = None, password: str = ""):
         self.client = SSHClient(
             hostname=os.getenv("HOSTNAME"),
             username=os.getenv("USERNAME"),
             key_file_path=os.getenv("KEY_FILE_PATH"),
             host_alias=host_alias,
-            password=password
+            password=password,
         )
         self.client.connect()
 
@@ -29,29 +34,58 @@ class OpenTrons:
     def _disconnect(self):
         self.client.close()
 
-    def _get_protocol(self,simulation):
+    def _get_protocol(self, simulation: bool):
         self.invoke("from opentrons.types import Point, Location")
         self.invoke("from opentrons import protocol_api")
         self.invoke("import json")
         if simulation:
             self.invoke("from opentrons import simulate")
-            self.invoke("protocol = simulate.get_protocol_api('2.21')")
+            self.invoke(f"protocol = simulate.get_protocol_api('{PROTOCOL_API_VERSION}')")
         else:
             self.invoke("from opentrons import execute")
-            self.invoke("protocol = execute.get_protocol_api('2.21')")
+            self.invoke(f"protocol = execute.get_protocol_api('{PROTOCOL_API_VERSION}')")
+
+    def _invoke_lines(self, code: str):
+        return self.invoke(code).split("\r\n")
+
+    def _invoke_scalar_line(self, code: str) -> str:
+        return self._invoke_lines(code)[-2].strip()
+
+    def _invoke_float(self, code: str) -> float:
+        return float(self._invoke_scalar_line(code))
+
+    def _invoke_bool(self, code: str) -> bool:
+        value = self._invoke_scalar_line(code)
+        if value == "True":
+            return True
+        if value == "False":
+            return False
+        raise ValueError(f"Expected bool-like SSH response, got: {value!r}")
+
+    def _init_low_level_hardware(self) -> None:
+        """Initialize low-level hardware/gripper handles in the remote interpreter."""
+        self.invoke("hardware = protocol._core_get_hardware()")
+        self.invoke("hardware.cache_instruments()")
+        self.invoke("from opentrons import types as _ot_types")
+        self.invoke("gripper_mount = getattr(getattr(_ot_types, 'OT3Mount', object), 'GRIPPER', None)")
+        self.invoke("gripper_mount = gripper_mount or getattr(getattr(_ot_types, 'Mount', object), 'GRIPPER', None)")
+        self.invoke("gripper = hardware._gripper_handler.get_gripper() if hardware.has_gripper() else None")
 
     @flow
-    def _load_custom_labware(self, nickname: str, labware_config:Dict, location: str):
+    def _load_custom_labware(self, nickname: str, labware_config: Dict, location: str):
         loadname = labware_config["parameters"]["loadName"]
         self.invoke(f"{loadname}={labware_config}")
-        self.invoke(f"{nickname} = protocol.load_labware_from_definition(labware_def = {loadname}, location = '{location}')")
+        self.invoke(
+            f"{nickname} = protocol.load_labware_from_definition("
+            f"labware_def = {loadname}, location = '{location}')"
+        )
 
     @flow
-    def _load_default_labware(self, nickname:str, loadname:str, location:str):
+    def _load_default_labware(self, nickname: str, loadname: str, location: str):
         self.invoke(f"{nickname} = protocol.load_labware(load_name = '{loadname}', location = '{location}')")
 
     @flow
-    def _load_default_instrument(self, nickname:str, instrument_name:str, mount:str):
+    def _load_default_instrument(self, nickname: str, instrument_name: str, mount: str):
         self.invoke(f"{nickname} = protocol.load_instrument(instrument_name = '{instrument_name}', mount = '{mount}')")
 
     @flow
@@ -71,9 +105,17 @@ class OpenTrons:
         #     "config": {}
         # }
         if labware["ot_default"]:
-            self._load_default_labware(nickname=labware["nickname"], loadname=labware["loadname"], location=labware["location"])
+            self._load_default_labware(
+                nickname=labware["nickname"],
+                loadname=labware["loadname"],
+                location=labware["location"],
+            )
         else:
-            self._load_custom_labware(nickname=labware["nickname"], labware_config=labware["config"], location=labware["location"])
+            self._load_custom_labware(
+                nickname=labware["nickname"],
+                labware_config=labware["config"],
+                location=labware["location"],
+            )
     
     @flow
     def load_instrument(self, instrument: Dict):
@@ -86,9 +128,17 @@ class OpenTrons:
         #     "config": {}
         # }
         if instrument["ot_default"]:
-            self._load_default_instrument(nickname=instrument["nickname"], instrument_name=instrument["instrument_name"], mount=instrument["mount"])
+            self._load_default_instrument(
+                nickname=instrument["nickname"],
+                instrument_name=instrument["instrument_name"],
+                mount=instrument["mount"],
+            )
         else:
-            self._load_custom_instrument(nickname=instrument["nickname"], instrument_config=instrument["config"], mount=instrument["mount"])
+            self._load_custom_instrument(
+                nickname=instrument["nickname"],
+                instrument_config=instrument["config"],
+                mount=instrument["mount"],
+            )
 
     @flow
     def load_module(self, module: Dict):
@@ -112,30 +162,38 @@ class OpenTrons:
 
     @flow 
     def well_diameter(self, labware_nickname: str, position: str):
-        return float(self.invoke(f"{labware_nickname}['{position}'].diameter").split("\r\n")[-2])
+        return self._invoke_float(f"{labware_nickname}['{position}'].diameter")
     
     @flow 
     def well_depth(self, labware_nickname: str, position: str):
-        return float(self.invoke(f"{labware_nickname}['{position}'].depth").split("\r\n")[-2])
+        return self._invoke_float(f"{labware_nickname}['{position}'].depth")
     
     @flow
     def tip_length(self, labware_nickname: str, position: str):
-        rtn = self.invoke(f"{labware_nickname}['{position}'].length").split("\r\n")
-        if len(rtn == 3):
+        rtn = self._invoke_lines(f"{labware_nickname}['{position}'].length")
+        if len(rtn) == 3:
             return float(rtn[-2])
-        else:
-            return None
+        return None
+
+    def _location_suffix(self, top: float = 0, bottom: float = 0, center: float = 0) -> str:
+        if top:
+            return f".top({top})"
+        if bottom:
+            return f".bottom({bottom})"
+        if center:
+            return ".center()"
+        return ".top(0)"  # preserve default behavior
 
     @flow
-    def get_location_from_labware(self, labware_nickname: str, position: str, top: float = 0, bottom: float=0, center: float=0):
-        if top:
-            append = f".top({top})"
-        elif bottom:
-            append = f".bottom({bottom})"
-        elif center:
-            append = f".center()"
-        else:
-            append = ".top(0)" # original one with 0 offset at z axis
+    def get_location_from_labware(
+        self,
+        labware_nickname: str,
+        position: str,
+        top: float = 0,
+        bottom: float = 0,
+        center: float = 0,
+    ):
+        append = self._location_suffix(top=top, bottom=bottom, center=center)
         self.invoke(f"location = {labware_nickname}['{position}']{append}")
         
     @flow
@@ -160,7 +218,7 @@ class OpenTrons:
         self.invoke(f"{pip_name}.drop_tip()")
 
     @flow
-    def prepare_aspirate(self, pip_name:str):
+    def prepare_aspirate(self, pip_name: str):
         self.invoke(f"{pip_name}.prepare_to_aspirate()")
 
     @flow
@@ -173,18 +231,21 @@ class OpenTrons:
 
     @flow
     def touch_tip(self, pip_name: str, labware_nickname: str, position: str, radius: float = 1.0, v_offset: float = -1.0):
-        self.invoke(f"{pip_name}.touch_tip('{labware_nickname}['{position}']', radius = {radius}, v_offset = {v_offset})")
+        self.invoke(
+            f"{pip_name}.touch_tip({labware_nickname}['{position}'], "
+            f"radius = {radius}, v_offset = {v_offset})"
+        )
 
     @flow
     def blow_out(self, pip_name: str):
         self.invoke(f"{pip_name}.blow_out(location = location)")
 
     @flow
-    def set_speed(self, pip_name: str, speed:float):
+    def set_speed(self, pip_name: str, speed: float):
         self.invoke(f"{pip_name}.default_speed = {speed}")
     
     @flow
-    def delay(self, seconds:float = 0, minutes: float = 0):
+    def delay(self, seconds: float = 0, minutes: float = 0):
         self.invoke(f"protocol.delay(seconds={seconds}, minutes = {minutes})")
     
     @flow
@@ -200,11 +261,66 @@ class OpenTrons:
         # labware_nickname is the name of labware to move, not the loadname which could duplicate
         # new_location "1", "D1", certain module (heater/shaker etc., protocol_api.OFF_DECK)
         if new_location == "OFF_DECK":
-            self.invoke(f"protocol.move_labware(labware = {labware_nickname}, new_location = protocol_api.OFF_DECK, use_gripper = True)")
+            self.invoke(
+                f"protocol.move_labware(labware = {labware_nickname}, "
+                "new_location = protocol_api.OFF_DECK, use_gripper = True)"
+            )
         elif "adapter" in new_location:
-            self.invoke(f"protocol.move_labware(labware = {labware_nickname}, new_location = {new_location}, use_gripper = True)")
+            self.invoke(
+                f"protocol.move_labware(labware = {labware_nickname}, "
+                f"new_location = {new_location}, use_gripper = True)"
+            )
         else:
-            self.invoke(f"protocol.move_labware(labware = {labware_nickname}, new_location = '{new_location}', use_gripper = True)")
+            self.invoke(
+                f"protocol.move_labware(labware = {labware_nickname}, "
+                f"new_location = '{new_location}', use_gripper = True)"
+            )
+
+    @flow
+    def gripper_is_attached(self):
+        self._init_low_level_hardware()
+        return self._invoke_bool("hardware.has_gripper()")
+
+    @flow
+    def gripper_close_jaw(self):
+        """Close gripper jaws (hardware `grip()`)."""
+        self._init_low_level_hardware()
+        self.invoke("assert hardware.has_gripper(), 'No gripper attached'")
+        self.invoke("hardware.grip()")
+
+    @flow
+    def gripper_open_jaw(self):
+        """Open gripper jaws (hardware `ungrip()`)."""
+        self._init_low_level_hardware()
+        self.invoke("assert hardware.has_gripper(), 'No gripper attached'")
+        self.invoke("hardware.ungrip()")
+
+    @flow
+    def gripper_jaw_width(self):
+        self._init_low_level_hardware()
+        self.invoke("assert gripper is not None, 'No gripper attached'")
+        return self._invoke_float("gripper.jaw_width")
+
+    @flow
+    def gripper_jaw_limits(self):
+        self._init_low_level_hardware()
+        self.invoke("assert gripper is not None, 'No gripper attached'")
+        min_width = self._invoke_float("gripper.min_jaw_width")
+        max_width = self._invoke_float("gripper.max_jaw_width")
+        return {"min": min_width, "max": max_width}
+
+    @flow
+    def gripper_move_to_absolute(self, x: float, y: float, z: float, speed: float = None):
+        """Move gripper critical point to an absolute deck coordinate using low-level hardware API."""
+        self._init_low_level_hardware()
+        self.invoke("assert hardware.has_gripper(), 'No gripper attached'")
+        self.invoke("assert gripper_mount is not None, 'Could not resolve gripper mount enum'")
+        if speed is None:
+            self.invoke(f"hardware.move_to(mount = gripper_mount, abs_position = Point({x}, {y}, {z}))")
+        else:
+            self.invoke(
+                f"hardware.move_to(mount = gripper_mount, abs_position = Point({x}, {y}, {z}), speed = {speed})"
+            )
     
     @flow
     def hs_latch_open(self, nickname: str):
@@ -256,9 +372,11 @@ class OpenTrons:
 
 
 @flow(log_prints=True)
-def demo_ot2(simulation:bool = True):
-    ot = OpenTrons(host_alias="ot2", password = "accelerate", simulation=simulation)
+def demo_ot2(simulation: bool = True):
+    """Minimal OT-2 smoke test for core pipetting wrappers."""
+    ot = OpenTrons(host_alias="ot2", password="accelerate", simulation=simulation)
     ot.home()
+
     with open(Path(r"C:\Users\aag\Downloads\matterlab_24_vialplate_3700ul.json"), "r") as f:
         plate_1 = json.load(f)
     with open(Path(r"C:\Users\aag\Downloads\matterlab_1_beaker_30000ul.json"), "r") as f:
@@ -267,157 +385,109 @@ def demo_ot2(simulation:bool = True):
         tips_1 = json.load(f)
 
     plates = [
-        {"nickname": "plate_96_1", "loadname": "corning_96_wellplate_360ul_flat", "location": "1", "ot_default": True, "config": {}},
-
+        {
+            "nickname": "plate_96_1",
+            "loadname": "corning_96_wellplate_360ul_flat",
+            "location": "1",
+            "ot_default": True,
+            "config": {},
+        },
         {"nickname": "beaker", "config": beaker_1, "location": "4", "ot_default": False},
         {"nickname": "vial_24_well_1", "config": plate_1, "location": "5", "ot_default": False},
-        {"nickname": "vial_24_well_2", "config": plate_1, "location": "6", "ot_default": False},
-        # {"nickname": "plate_96_2", "loadname": "corning_96_wellplate_360ul_flat", "location": "3", "ot_default": True, "config": {}},
-        ]
-    tips = [
-        # {"nickname": "tip_20_96_1", "loadname": "opentrons_96_tiprack_20ul", "location": "7", "ot_default": True, "config": {}},
-        {"nickname": "tip_20_96_1", "config": tips_1, "location": "7", "ot_default": False},
-        {"nickname": "tip_300_96_1", "loadname": "opentrons_96_tiprack_300ul", "location": "8", "ot_default": True, "config": {}},
     ]
-    for plate in plates:
-        ot.load_labware(plate)
-    for tip in tips:
-        ot.load_labware(tip)
+    tips = [
+        {"nickname": "tip_20_96_1", "config": tips_1, "location": "7", "ot_default": False},
+        {
+            "nickname": "tip_300_96_1",
+            "loadname": "opentrons_96_tiprack_300ul",
+            "location": "8",
+            "ot_default": True,
+            "config": {},
+        },
+    ]
+    for labware in plates + tips:
+        ot.load_labware(labware)
 
     ot.load_instrument({"nickname": "p20", "instrument_name": "p20_single_gen2", "mount": "left", "ot_default": True})
     ot.load_instrument({"nickname": "p300", "instrument_name": "p300_single_gen2", "mount": "right", "ot_default": True})
-    
-    ot.get_location_from_labware(labware_nickname="tip_300_96_1", position= "A1", top=0)
+
+    # p300 smoke test: beaker -> plate
+    ot.get_location_from_labware(labware_nickname="tip_300_96_1", position="A1", top=0)
     ot.pick_up_tip(pip_name="p300")
-    sample_num=48
-    for i in range(0, sample_num):
-        target_loc = f"{chr(65+i//12)}{i%12+1}"
-        print(f"add to {target_loc}")
-
-        ot.get_location_from_labware(labware_nickname="beaker", position="A1", bottom=5)
-        ot.move_to_pip(pip_name="p300")
-        ot.aspirate(pip_name="p300", volume=150)
-
-        ot.get_location_from_labware(labware_nickname="plate_96_1", position=target_loc, top=-1)
-        ot.move_to_pip(pip_name="p300")
-        ot.dispense(pip_name="p300", volume=150)
-        ot.blow_out(pip_name="p300")        
+    ot.get_location_from_labware(labware_nickname="beaker", position="A1", bottom=5)
+    ot.move_to_pip(pip_name="p300")
+    ot.aspirate(pip_name="p300", volume=150)
+    ot.get_location_from_labware(labware_nickname="plate_96_1", position="A1", top=-1)
+    ot.move_to_pip(pip_name="p300")
+    ot.dispense(pip_name="p300", volume=150)
+    ot.blow_out(pip_name="p300")
     ot.return_tip(pip_name="p300")
 
-    for i in range(0, 24):
-        source_loc = f"{chr(65+i//6)}{i%6+1}"
-        target_loc = f"{chr(65+i//12)}{i%12+1}"
-
-        ot.get_location_from_labware(labware_nickname="tip_20_96_1", position=target_loc, top=0)
-        ot.pick_up_tip(pip_name="p20")
-
-        ot.get_location_from_labware(labware_nickname="vial_24_well_1", position=source_loc, bottom=5)
-        ot.move_to_pip("p20")
-        ot.aspirate(pip_name="p20", volume=10)
-        
-        ot.get_location_from_labware(labware_nickname="plate_96_1", position=target_loc, top=-1)
-        ot.move_to_pip("p20")
-        ot.dispense(pip_name="p20", volume=10)
-        ot.blow_out(pip_name="p20")
-
-        ot.drop_tip("p20")
-    
-    for i in range(0, 24):
-        source_loc = f"{chr(65+i//6)}{i%6+1}"
-        target_loc = f"{chr(67+i//12)}{i%12+1}"
-
-        ot.get_location_from_labware(labware_nickname="tip_20_96_1", position=target_loc, top=0)
-        ot.pick_up_tip(pip_name="p20")
-
-        ot.get_location_from_labware(labware_nickname="vial_24_well_2", position=source_loc, bottom=5)
-        ot.move_to_pip("p20")
-        ot.aspirate(pip_name="p20", volume=10)
-        
-        ot.get_location_from_labware(labware_nickname="plate_96_1", position=target_loc, bottom=1)
-        ot.move_to_pip("p20")
-        ot.dispense(pip_name="p20", volume=10)
-        ot.blow_out(pip_name="p20")
-
-        ot.drop_tip("p20")
-        
-        
-    ot.get_location_from_labware(labware_nickname="tip_300_96_1", position= "A1", top=0)
-    ot.pick_up_tip(pip_name="p300")
-    sample_num=48
-    for i in range(0, sample_num):
-        target_loc = f"{chr(65+i//12)}{i%12+1}"
-        print(f"add to {target_loc}")
-
-        ot.get_location_from_labware(labware_nickname="beaker", position="A1", bottom=5)
-        ot.move_to_pip(pip_name="p300")
-        ot.aspirate(pip_name="p300", volume=150)
-
-        ot.get_location_from_labware(labware_nickname="plate_96_1", position=target_loc, top=-1)
-        ot.move_to_pip(pip_name="p300")
-        ot.dispense(pip_name="p300", volume=150)
-        ot.blow_out(pip_name="p300")        
-    ot.return_tip(pip_name="p300")
-    
-    # ot.remove_labware(labware_nickname="plate_96_1")
-
-    # ot.load_labware({"nickname": "plate_96_2", "loadname": "corning_96_wellplate_360ul_flat", "location": "2", "ot_default": True, "config": {}})
-
-    # ot.get_location_from_labware(labware_nickname="plate_96_2", position="H12", top=-1)
-    # ot.move_to_pip(pip_name="p1000")
-    # ot.dispense(pip_name="p1000", volume=100)
-    # ot.blow_out(pip_name="p1000")
-
-    # ot.return_tip(pip_name="p1000")
-    
+    # p20 smoke test: vial -> plate
+    ot.get_location_from_labware(labware_nickname="tip_20_96_1", position="A1", top=0)
+    ot.pick_up_tip(pip_name="p20")
+    ot.get_location_from_labware(labware_nickname="vial_24_well_1", position="A1", bottom=5)
+    ot.move_to_pip("p20")
+    ot.aspirate(pip_name="p20", volume=10)
+    ot.get_location_from_labware(labware_nickname="plate_96_1", position="B1", top=-1)
+    ot.move_to_pip("p20")
+    ot.dispense(pip_name="p20", volume=10)
+    ot.blow_out(pip_name="p20")
+    ot.drop_tip("p20")
 
     ot.close_session()
 
+
 @flow(log_prints=True)
 def demo_flex(simulation: bool = True):
-    ot=OpenTrons(host_alias="otflex", password="accelerate", simulation=simulation)
+    """Minimal Flex smoke test for module + gripper wrappers."""
+    ot = OpenTrons(host_alias="otflex", password="accelerate", simulation=simulation)
     ot.home()
-    plates=[
-       {"nickname": "plate_96_1", "loadname": "corning_96_wellplate_360ul_flat", "location": "B3", "ot_default": True, "config": {}},
-        # {"nickname": "plate_96_2", "loadname": "corning_96_wellplate_360ul_flat", "location": "3", "ot_default": True, "config": {}},
-        ]
-    tips=[
-        {"nickname": "tip_1000_96_1", "loadname": "opentrons_flex_96_filtertiprack_1000ul", "location": "B1", "ot_default": True, "config": {}}
-    ]
-    for plate in plates:
-        ot.load_labware(plate)
-    for tip in tips:
-        ot.load_labware(tip)
 
-    ot.load_instrument({"nickname": "p1000", "instrument_name": "flex_1channel_1000", "mount" : "left", "ot_default": True})
-    ot.load_module({"nickname": "hs", "module_name": "heaterShakerModuleV1", "location": "A1", "adapter": "opentrons_universal_flat_adapter"})
+    for labware in [
+        {
+            "nickname": "plate_96_1",
+            "loadname": "corning_96_wellplate_360ul_flat",
+            "location": "B3",
+            "ot_default": True,
+            "config": {},
+        },
+        {
+            "nickname": "tip_1000_96_1",
+            "loadname": "opentrons_flex_96_filtertiprack_1000ul",
+            "location": "B1",
+            "ot_default": True,
+            "config": {},
+        },
+    ]:
+        ot.load_labware(labware)
 
+    ot.load_instrument(
+        {"nickname": "p1000", "instrument_name": "flex_1channel_1000", "mount": "left", "ot_default": True}
+    )
+    ot.load_module(
+        {
+            "nickname": "hs",
+            "module_name": "heaterShakerModuleV1",
+            "location": "A1",
+            "adapter": "opentrons_universal_flat_adapter",
+        }
+    )
 
-    # ot.move_labware_w_gripper(labware_nickname="plate_96_1", new_location="C3")
-
+    # Heater-shaker latch smoke test (returns to closed state)
     ot.hs_latch_open(nickname="hs")
-    # ot.move_labware_w_gripper(labware_nickname="plate_96_1", new_location="hs_adapter")
     ot.hs_latch_close(nickname="hs")
 
-    # ot.set_rpm(nickname="hs", rpm=200)
-    # time.sleep(10)
-    # ot.set_rpm(nickname="hs", rpm=0)
-    # time.sleep(5)
+    # Low-level gripper smoke test (real hardware only)
+    if not simulation and ot.gripper_is_attached():
+        print("Gripper jaw limits:", ot.gripper_jaw_limits())
+        print("Gripper jaw width:", ot.gripper_jaw_width())
+        ot.gripper_open_jaw()
+        ot.gripper_close_jaw()
+        ot.gripper_open_jaw()  # return to open/idle state
 
-    # ot.hs_latch_open(nickname="hs")
-    # ot.move_labware_w_gripper(labware_nickname="plate_96_1", new_location="B4")
-
-    # ot.get_location_from_labware(labware_nickname="tip_1000_96_1", position= "A1", top=0)
-    # ot.pick_up_tip(pip_name="p1000")
-
-    # ot.get_location_from_labware(labware_nickname="plate_96_1", position="A1", bottom=1)
-    # ot.move_to_pip(pip_name="p1000")
-    # ot.aspirate(pip_name="p1000", volume=200)
-    
-    # ot.get_location_from_labware(labware_nickname="plate_96_1", position="A2", top=-1)
-    # ot.move_to_pip(pip_name="p1000")
-    # ot.aspirate(pip_name="p1000", volume=200)
-
-    # ot.return_tip(pip_name="p1000")
+        # Optional: only use a validated safe coordinate for your deck setup.
+        # ot.gripper_move_to_absolute(x=200.0, y=200.0, z=250.0)
 
     ot.close_session()
 
