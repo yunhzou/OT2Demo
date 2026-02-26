@@ -1,0 +1,74 @@
+{
+  "host_alias": "ot2_training",
+  "password": "accelerate",
+  "simulation": true,
+  "sample_num": 96,
+  "well_selection": [],
+  "pipette_name": "p300",
+  "tiprack_nickname": "tip_300_96_1",
+  "labware": [
+    {
+      "nickname": "plate_96_1",
+      "location": "1",
+      "ot_default": true,
+      "loadname": "corning_96_wellplate_360ul_flat",
+      "config": {},
+      "config_path": ""
+    },
+    {
+      "nickname": "plate_96_2",
+      "location": "2",
+      "ot_default": true,
+      "loadname": "corning_96_wellplate_360ul_flat",
+      "config": {},
+      "config_path": ""
+    },
+    {
+      "nickname": "resovir",
+      "location": "3",
+      "ot_default": true,
+      "loadname": "agilent_1_reservoir_290ml",
+      "config": {},
+      "config_path": ""
+    },
+    {
+      "nickname": "tip_300_96_1",
+      "location": "4",
+      "ot_default": true,
+      "loadname": "opentrons_96_tiprack_300ul",
+      "config": {},
+      "config_path": ""
+    }
+  ],
+  "instrument": {
+    "nickname": "p300",
+    "instrument_name": "p300_single_gen2",
+    "mount": "left",
+    "ot_default": true,
+    "config": {}
+  },
+  "dissolve": {
+    "source_labware": "resovir",
+    "source_well": "A1",
+    "source_bottom": 10,
+    "add_volume_ul": 300,
+    "target_labware": "plate_96_1",
+    "target_bottom_dispense": 1,
+    "mix_repetitions": 3,
+    "mix_volume_ul": 200,
+    "delay_seconds": 1
+  },
+  "transfer": {
+    "source_labware": "plate_96_1",
+    "source_bottom": 3,
+    "aspirate_volume_ul": 30,
+    "source_lift_top": 5,
+    "destination_labware": "plate_96_2",
+    "destination_top": -1,
+    "destination_bottom": null,
+    "dispense_volume_ul": 30,
+    "delay_seconds": 1,
+    "blow_out": true
+  },
+  "dilution": null
+}

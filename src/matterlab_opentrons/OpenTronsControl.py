@@ -697,7 +697,7 @@ class OpenTrons:
 @flow(log_prints=True)
 def demo_ot2(simulation: bool = True):
     """Minimal OT-2 smoke test for core pipetting wrappers."""
-    ot = OpenTrons(host_alias="ot2", password="accelerate", simulation=simulation)
+    ot = OpenTrons(host_alias="ot2_training", password="accelerate", simulation=simulation)
     ot.home()
 
     with open(Path(r"C:\Users\aag\Downloads\matterlab_24_vialplate_3700ul.json"), "r") as f:
@@ -817,5 +817,5 @@ def demo_flex(simulation: bool = True):
 
 if __name__ == "__main__":
     pass
-    # demo_ot2(simulation=False)
+    # demo_ot2(simulation=True)
     # demo_flex(simulation=True)
