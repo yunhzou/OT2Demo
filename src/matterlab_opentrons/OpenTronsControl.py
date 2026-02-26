@@ -1,14 +1,11 @@
 from prefect import flow,task,serve
 from .sshclient import SSHClient
-# from dotenv import load_dotenv
 import os
-import time 
-# from sensor_util import color_sensor
+import time
 from pathlib import Path
 from typing import Dict, Union
 import json
 
-# load_dotenv(".env")
 
 class OpenTrons:
     def __init__(self, host_alias:str = None, password="", simulation=False):
@@ -426,5 +423,6 @@ def demo_flex(simulation: bool = True):
 
 
 if __name__ == "__main__":
-    demo_ot2(simulation=False)
+    pass
+    # demo_ot2(simulation=False)
     # demo_flex(simulation=True)
