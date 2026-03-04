@@ -49,4 +49,4 @@ def demo_ot2_optic_hte_dilution_workflow(
 if __name__ == "__main__":
     # Uncomment to bootstrap a JSON spec you can edit instead of changing code.
     # write_default_spec()
-    demo_ot2_optic_hte_dilution_workflow(simulation=True)
+    demo_ot2_optic_hte_dilution_workflow(simulation=False)
