@@ -10,6 +10,14 @@ def _well_name(i: int) -> str:
     return f"{chr(65 + i // 12)}{i % 12 + 1}"
 
 
+def _slug_token(value: str) -> str:
+    token = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value))
+    while "__" in token:
+        token = token.replace("__", "_")
+    token = token.strip("_")
+    return token or "stage"
+
+
 def _parse_well_token(well: str) -> Tuple[int, int]:
     well = well.strip().upper()
     if len(well) < 2 or not well[0].isalpha():
@@ -150,6 +158,8 @@ class TransferSpec:
 
     delay_seconds: float = 1
     blow_out: bool = True
+    mix_after_dispense_repetitions: int = 0
+    mix_after_dispense_volume_ul: Optional[float] = None
 
 
 @dataclass
@@ -221,7 +231,10 @@ class PlateProcessSpec:
 
     dissolve: Optional[DissolveSpec] = field(default_factory=DissolveSpec)
     transfer: Optional[TransferSpec] = field(default_factory=TransferSpec)
+    prefill: Optional[DilutionSpec] = None
+    transfer_2: Optional[TransferSpec] = None
     dilution: Optional[DilutionSpec] = None
+    stages: List[Dict[str, Any]] = field(default_factory=list)
     _source_dir: str = field(default="", repr=False, compare=False)
 
     def validate(self) -> None:
@@ -233,10 +246,43 @@ class PlateProcessSpec:
             raise ValueError("pipette_name must match instrument.nickname in this compiler")
         if self.dissolve and self.dissolve.mix_repetitions < 0:
             raise ValueError("dissolve.mix_repetitions must be >= 0")
+        if self.transfer and self.transfer.mix_after_dispense_repetitions < 0:
+            raise ValueError("transfer.mix_after_dispense_repetitions must be >= 0")
+        if self.transfer_2 and self.transfer_2.mix_after_dispense_repetitions < 0:
+            raise ValueError("transfer_2.mix_after_dispense_repetitions must be >= 0")
+        if self.prefill and self.prefill.mix_repetitions < 0:
+            raise ValueError("prefill.mix_repetitions must be >= 0")
         if self.dilution and self.dilution.mix_repetitions < 0:
             raise ValueError("dilution.mix_repetitions must be >= 0")
-        if self.dissolve is None and self.transfer is None and self.dilution is None:
-            raise ValueError("At least one of dissolve/transfer/dilution must be provided")
+        for idx, stage in enumerate(self.stages):
+            if not isinstance(stage, dict):
+                raise ValueError(f"stages[{idx}] must be an object")
+            kind = str(stage.get("kind", "")).strip().lower()
+            if kind not in {"dissolve", "transfer", "dilution"}:
+                raise ValueError(f"stages[{idx}].kind must be dissolve/transfer/dilution, got {kind!r}")
+            payload = {k: v for k, v in stage.items() if k not in {"kind", "name"}}
+            if kind == "dissolve":
+                op = DissolveSpec(**payload)
+                if op.mix_repetitions < 0:
+                    raise ValueError(f"stages[{idx}].mix_repetitions must be >= 0")
+            elif kind == "transfer":
+                op = TransferSpec(**payload)
+                if op.mix_after_dispense_repetitions < 0:
+                    raise ValueError(f"stages[{idx}].mix_after_dispense_repetitions must be >= 0")
+            else:
+                op = DilutionSpec(**payload)
+                if op.mix_repetitions < 0:
+                    raise ValueError(f"stages[{idx}].mix_repetitions must be >= 0")
+        if (
+            not self.stages
+            and
+            self.prefill is None
+            and self.dissolve is None
+            and self.transfer is None
+            and self.transfer_2 is None
+            and self.dilution is None
+        ):
+            raise ValueError("At least one of prefill/dissolve/transfer/transfer_2/dilution must be provided")
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -261,7 +307,10 @@ class PlateProcessSpec:
             instrument=InstrumentSpec(**data.get("instrument", {})) if data.get("instrument") else defaults.instrument,
             dissolve=DissolveSpec(**data["dissolve"]) if data.get("dissolve") is not None else None,
             transfer=TransferSpec(**data["transfer"]) if data.get("transfer") is not None else None,
+            prefill=DilutionSpec(**data["prefill"]) if data.get("prefill") is not None else None,
+            transfer_2=TransferSpec(**data["transfer_2"]) if data.get("transfer_2") is not None else None,
             dilution=DilutionSpec(**data["dilution"]) if data.get("dilution") is not None else None,
+            stages=data.get("stages", []) or [],
         )
 
     @classmethod
@@ -297,66 +346,71 @@ def _compile_dissolve_for_well(
     well: str,
     pipette_name: str,
     op: DissolveSpec,
+    name_prefix: str = "dissolve",
 ) -> None:
     _set_location(
         steps,
-        name=f"{well}_dissolve_source_loc",
+        name=f"{well}_{name_prefix}_source_loc",
         labware_nickname=op.source_labware,
         position=op.source_well,
         bottom=op.source_bottom,
     )
-    steps.append(WorkflowStep("move_to_pip", {"pip_name": pipette_name}, name=f"{well}_dissolve_move_source", capture_result=False))
+    steps.append(
+        WorkflowStep("move_to_pip", {"pip_name": pipette_name}, name=f"{well}_{name_prefix}_move_source", capture_result=False)
+    )
     steps.append(
         WorkflowStep(
             "aspirate",
             {"pip_name": pipette_name, "volume": op.add_volume_ul},
-            name=f"{well}_dissolve_asp",
+            name=f"{well}_{name_prefix}_asp",
             capture_result=False,
         )
     )
     if op.delay_seconds:
-        steps.append(_delay_step(op.delay_seconds, f"{well}_dissolve_delay_a"))
+        steps.append(_delay_step(op.delay_seconds, f"{well}_{name_prefix}_delay_a"))
 
     _set_location(
         steps,
-        name=f"{well}_dissolve_target_loc",
+        name=f"{well}_{name_prefix}_target_loc",
         labware_nickname=op.target_labware,
         position=well,
         bottom=op.target_bottom_dispense,
     )
-    steps.append(WorkflowStep("move_to_pip", {"pip_name": pipette_name}, name=f"{well}_dissolve_move_target", capture_result=False))
+    steps.append(
+        WorkflowStep("move_to_pip", {"pip_name": pipette_name}, name=f"{well}_{name_prefix}_move_target", capture_result=False)
+    )
     steps.append(
         WorkflowStep(
             "dispense",
             {"pip_name": pipette_name, "volume": op.add_volume_ul},
-            name=f"{well}_dissolve_disp",
+            name=f"{well}_{name_prefix}_disp",
             capture_result=False,
         )
     )
     if op.delay_seconds:
-        steps.append(_delay_step(op.delay_seconds, f"{well}_dissolve_delay_b"))
+        steps.append(_delay_step(op.delay_seconds, f"{well}_{name_prefix}_delay_b"))
 
     for mix_idx in range(op.mix_repetitions):
         steps.append(
             WorkflowStep(
                 "aspirate",
                 {"pip_name": pipette_name, "volume": op.mix_volume_ul},
-                name=f"{well}_dissolve_mix{mix_idx+1}_asp",
+                name=f"{well}_{name_prefix}_mix{mix_idx+1}_asp",
                 capture_result=False,
             )
         )
         if op.delay_seconds:
-            steps.append(_delay_step(op.delay_seconds, f"{well}_dissolve_mix{mix_idx+1}_delay_a"))
+            steps.append(_delay_step(op.delay_seconds, f"{well}_{name_prefix}_mix{mix_idx+1}_delay_a"))
         steps.append(
             WorkflowStep(
                 "dispense",
                 {"pip_name": pipette_name, "volume": op.mix_volume_ul},
-                name=f"{well}_dissolve_mix{mix_idx+1}_disp",
+                name=f"{well}_{name_prefix}_mix{mix_idx+1}_disp",
                 capture_result=False,
             )
         )
         if op.delay_seconds:
-            steps.append(_delay_step(op.delay_seconds, f"{well}_dissolve_mix{mix_idx+1}_delay_b"))
+            steps.append(_delay_step(op.delay_seconds, f"{well}_{name_prefix}_mix{mix_idx+1}_delay_b"))
 
 
 def _compile_transfer_for_well(
@@ -364,39 +418,40 @@ def _compile_transfer_for_well(
     well: str,
     pipette_name: str,
     op: TransferSpec,
+    name_prefix: str = "transfer",
 ) -> None:
     _set_location(
         steps,
-        name=f"{well}_transfer_source_loc",
+        name=f"{well}_{name_prefix}_source_loc",
         labware_nickname=op.source_labware,
         position=well,
         bottom=op.source_bottom,
     )
     if op.delay_seconds:
-        steps.append(_delay_step(op.delay_seconds, f"{well}_transfer_delay_a"))
+        steps.append(_delay_step(op.delay_seconds, f"{well}_{name_prefix}_delay_a"))
     steps.append(
         WorkflowStep(
             "aspirate",
             {"pip_name": pipette_name, "volume": op.aspirate_volume_ul},
-            name=f"{well}_transfer_asp",
+            name=f"{well}_{name_prefix}_asp",
             capture_result=False,
         )
     )
     if op.source_lift_top is not None:
         _set_location(
             steps,
-            name=f"{well}_transfer_source_lift",
+            name=f"{well}_{name_prefix}_source_lift",
             labware_nickname=op.source_labware,
             position=well,
             top=op.source_lift_top,
         )
     if op.delay_seconds:
-        steps.append(_delay_step(op.delay_seconds, f"{well}_transfer_delay_b"))
+        steps.append(_delay_step(op.delay_seconds, f"{well}_{name_prefix}_delay_b"))
 
     if op.destination_bottom is not None:
         _set_location(
             steps,
-            name=f"{well}_transfer_dest_loc",
+            name=f"{well}_{name_prefix}_dest_loc",
             labware_nickname=op.destination_labware,
             position=well,
             bottom=op.destination_bottom,
@@ -404,7 +459,7 @@ def _compile_transfer_for_well(
     else:
         _set_location(
             steps,
-            name=f"{well}_transfer_dest_loc",
+            name=f"{well}_{name_prefix}_dest_loc",
             labware_nickname=op.destination_labware,
             position=well,
             top=op.destination_top if op.destination_top is not None else 0,
@@ -413,12 +468,36 @@ def _compile_transfer_for_well(
         WorkflowStep(
             "dispense",
             {"pip_name": pipette_name, "volume": op.dispense_volume_ul or op.aspirate_volume_ul},
-            name=f"{well}_transfer_disp",
+            name=f"{well}_{name_prefix}_disp",
             capture_result=False,
         )
     )
+    mix_volume = op.mix_after_dispense_volume_ul or op.dispense_volume_ul or op.aspirate_volume_ul
+    for mix_idx in range(op.mix_after_dispense_repetitions):
+        steps.append(
+            WorkflowStep(
+                "aspirate",
+                {"pip_name": pipette_name, "volume": mix_volume},
+                name=f"{well}_{name_prefix}_mix{mix_idx+1}_asp",
+                capture_result=False,
+            )
+        )
+        if op.delay_seconds:
+            steps.append(_delay_step(op.delay_seconds, f"{well}_{name_prefix}_mix{mix_idx+1}_delay_a"))
+        steps.append(
+            WorkflowStep(
+                "dispense",
+                {"pip_name": pipette_name, "volume": mix_volume},
+                name=f"{well}_{name_prefix}_mix{mix_idx+1}_disp",
+                capture_result=False,
+            )
+        )
+        if op.delay_seconds:
+            steps.append(_delay_step(op.delay_seconds, f"{well}_{name_prefix}_mix{mix_idx+1}_delay_b"))
     if op.blow_out:
-        steps.append(WorkflowStep("blow_out", {"pip_name": pipette_name}, name=f"{well}_transfer_blow_out", capture_result=False))
+        steps.append(
+            WorkflowStep("blow_out", {"pip_name": pipette_name}, name=f"{well}_{name_prefix}_blow_out", capture_result=False)
+        )
 
 
 def _compile_dilution_for_well(
@@ -426,49 +505,54 @@ def _compile_dilution_for_well(
     well: str,
     pipette_name: str,
     op: DilutionSpec,
+    name_prefix: str = "dilution",
 ) -> None:
     _set_location(
         steps,
-        name=f"{well}_dilution_source_loc",
+        name=f"{well}_{name_prefix}_source_loc",
         labware_nickname=op.diluent_labware,
         position=op.diluent_well,
         bottom=op.diluent_bottom,
     )
-    steps.append(WorkflowStep("move_to_pip", {"pip_name": pipette_name}, name=f"{well}_dilution_move_source", capture_result=False))
+    steps.append(
+        WorkflowStep("move_to_pip", {"pip_name": pipette_name}, name=f"{well}_{name_prefix}_move_source", capture_result=False)
+    )
     steps.append(
         WorkflowStep(
             "aspirate",
             {"pip_name": pipette_name, "volume": op.diluent_volume_ul},
-            name=f"{well}_dilution_asp",
+            name=f"{well}_{name_prefix}_asp",
             capture_result=False,
         )
     )
     if op.delay_seconds:
-        steps.append(_delay_step(op.delay_seconds, f"{well}_dilution_delay_a"))
+        steps.append(_delay_step(op.delay_seconds, f"{well}_{name_prefix}_delay_a"))
     _set_location(
         steps,
-        name=f"{well}_dilution_target_loc",
+        name=f"{well}_{name_prefix}_target_loc",
         labware_nickname=op.target_labware,
         position=well,
         bottom=op.target_bottom_dispense,
     )
-    steps.append(WorkflowStep("move_to_pip", {"pip_name": pipette_name}, name=f"{well}_dilution_move_target", capture_result=False))
+    steps.append(
+        WorkflowStep("move_to_pip", {"pip_name": pipette_name}, name=f"{well}_{name_prefix}_move_target", capture_result=False)
+    )
     steps.append(
         WorkflowStep(
             "dispense",
             {"pip_name": pipette_name, "volume": op.diluent_volume_ul},
-            name=f"{well}_dilution_disp",
+            name=f"{well}_{name_prefix}_disp",
             capture_result=False,
         )
     )
     if op.delay_seconds:
-        steps.append(_delay_step(op.delay_seconds, f"{well}_dilution_delay_b"))
+        steps.append(_delay_step(op.delay_seconds, f"{well}_{name_prefix}_delay_b"))
     for mix_idx in range(op.mix_repetitions):
         steps.append(
             WorkflowStep(
                 "aspirate",
                 {"pip_name": pipette_name, "volume": op.mix_volume_ul},
-                name=f"{well}_dilution_mix{mix_idx+1}_asp",
+                name=f"{well}_{name_prefix}_mix{mix_idx+1}_asp",
                 capture_result=False,
             )
         )
@@ -476,7 +560,7 @@ def _compile_dilution_for_well(
             WorkflowStep(
                 "dispense",
                 {"pip_name": pipette_name, "volume": op.mix_volume_ul},
-                name=f"{well}_dilution_mix{mix_idx+1}_disp",
+                name=f"{well}_{name_prefix}_mix{mix_idx+1}_disp",
                 capture_result=False,
             )
         )
@@ -518,12 +602,43 @@ def compile_plate_process_steps(spec: PlateProcessSpec) -> List[WorkflowStep]:
             WorkflowStep("pick_up_tip", {"pip_name": spec.pipette_name}, name=f"{well}_pickup_tip", capture_result=False)
         )
 
-        if spec.dissolve is not None:
-            _compile_dissolve_for_well(steps, well, spec.pipette_name, spec.dissolve)
-        if spec.transfer is not None:
-            _compile_transfer_for_well(steps, well, spec.pipette_name, spec.transfer)
-        if spec.dilution is not None:
-            _compile_dilution_for_well(steps, well, spec.pipette_name, spec.dilution)
+        if spec.stages:
+            prefix_counts: Dict[str, int] = {}
+            for stage_idx, stage in enumerate(spec.stages, start=1):
+                kind = str(stage.get("kind", "")).strip().lower()
+                payload = {k: v for k, v in stage.items() if k not in {"kind", "name"}}
+                if "name" in stage:
+                    base_prefix = _slug_token(stage["name"])
+                else:
+                    base_prefix = f"{kind}{stage_idx}"
+                prefix_counts[base_prefix] = prefix_counts.get(base_prefix, 0) + 1
+                prefix = base_prefix if prefix_counts[base_prefix] == 1 else f"{base_prefix}_{prefix_counts[base_prefix]}"
+
+                if kind == "dissolve":
+                    _compile_dissolve_for_well(
+                        steps, well, spec.pipette_name, DissolveSpec(**payload), name_prefix=prefix
+                    )
+                elif kind == "transfer":
+                    _compile_transfer_for_well(
+                        steps, well, spec.pipette_name, TransferSpec(**payload), name_prefix=prefix
+                    )
+                elif kind == "dilution":
+                    _compile_dilution_for_well(
+                        steps, well, spec.pipette_name, DilutionSpec(**payload), name_prefix=prefix
+                    )
+                else:
+                    raise ValueError(f"Unsupported stage kind: {kind!r}")
+        else:
+            if spec.prefill is not None:
+                _compile_dilution_for_well(steps, well, spec.pipette_name, spec.prefill, name_prefix="prefill")
+            if spec.dissolve is not None:
+                _compile_dissolve_for_well(steps, well, spec.pipette_name, spec.dissolve)
+            if spec.transfer is not None:
+                _compile_transfer_for_well(steps, well, spec.pipette_name, spec.transfer)
+            if spec.transfer_2 is not None:
+                _compile_transfer_for_well(steps, well, spec.pipette_name, spec.transfer_2, name_prefix="transfer2")
+            if spec.dilution is not None:
+                _compile_dilution_for_well(steps, well, spec.pipette_name, spec.dilution)
 
         steps.append(
             WorkflowStep("drop_tip", {"pip_name": spec.pipette_name}, name=f"{well}_drop_tip", capture_result=False)

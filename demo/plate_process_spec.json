@@ -25,9 +25,17 @@
     },
     {
       "nickname": "resovir",
-      "location": "3",
+      "location": "5",
       "ot_default": true,
       "loadname": "agilent_1_reservoir_290ml",
+      "config": {},
+      "config_path": ""
+    },
+    {
+      "nickname": "plate_96_3",
+      "location": "3",
+      "ot_default": true,
+      "loadname": "corning_96_wellplate_360ul_flat",
       "config": {},
       "config_path": ""
     },
@@ -47,28 +55,69 @@
     "ot_default": true,
     "config": {}
   },
-  "dissolve": {
-    "source_labware": "resovir",
-    "source_well": "A1",
-    "source_bottom": 10,
-    "add_volume_ul": 300,
-    "target_labware": "plate_96_1",
-    "target_bottom_dispense": 1,
-    "mix_repetitions": 3,
-    "mix_volume_ul": 200,
-    "delay_seconds": 1
-  },
-  "transfer": {
-    "source_labware": "plate_96_1",
-    "source_bottom": 3,
-    "aspirate_volume_ul": 30,
-    "source_lift_top": 5,
-    "destination_labware": "plate_96_2",
-    "destination_top": -1,
-    "destination_bottom": null,
-    "dispense_volume_ul": 30,
-    "delay_seconds": 1,
-    "blow_out": true
-  },
+  "stages": [
+    {
+      "kind": "dilution",
+      "name": "prefill_plate2",
+      "diluent_labware": "resovir",
+      "diluent_well": "A1",
+      "diluent_bottom": 10,
+      "diluent_volume_ul": 270,
+      "target_labware": "plate_96_2",
+      "target_bottom_dispense": 1,
+      "mix_repetitions": 0,
+      "mix_volume_ul": 50,
+      "delay_seconds": 1
+    },
+    {
+      "kind": "dissolve",
+      "name": "dissolve_plate1",
+      "source_labware": "resovir",
+      "source_well": "A1",
+      "source_bottom": 10,
+      "add_volume_ul": 300,
+      "target_labware": "plate_96_1",
+      "target_bottom_dispense": 1,
+      "mix_repetitions": 3,
+      "mix_volume_ul": 200,
+      "delay_seconds": 1
+    },
+    {
+      "kind": "transfer",
+      "name": "plate1_to_plate2",
+      "source_labware": "plate_96_1",
+      "source_bottom": 3,
+      "aspirate_volume_ul": 30,
+      "source_lift_top": 5,
+      "destination_labware": "plate_96_2",
+      "destination_top": null,
+      "destination_bottom": 3,
+      "dispense_volume_ul": 30,
+      "delay_seconds": 1,
+      "blow_out": true,
+      "mix_after_dispense_repetitions": 3,
+      "mix_after_dispense_volume_ul": 200
+    },
+    {
+      "kind": "transfer",
+      "name": "plate2_to_plate3",
+      "source_labware": "plate_96_2",
+      "source_bottom": 3,
+      "aspirate_volume_ul": 30,
+      "source_lift_top": 5,
+      "destination_labware": "plate_96_3",
+      "destination_top": null,
+      "destination_bottom": 3,
+      "dispense_volume_ul": 30,
+      "delay_seconds": 1,
+      "blow_out": true,
+      "mix_after_dispense_repetitions": 0,
+      "mix_after_dispense_volume_ul": null
+    }
+  ],
+  "prefill": null,
+  "dissolve": null,
+  "transfer": null,
+  "transfer_2": null,
   "dilution": null
 }
