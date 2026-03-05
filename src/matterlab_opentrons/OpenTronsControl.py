@@ -18,6 +18,7 @@ class OpenTrons:
         self._labware_meta: Dict[str, Dict[str, Any]] = {}
         self._current_location_context: Dict[str, Optional[str]] = {"labware_nickname": None, "position": None}
         self._tip_trackers: Dict[str, Path] = {}
+        self._tip_tracker_memory_docs: Dict[str, Dict[str, Any]] = {}
         self._mounted_tips: Dict[str, Dict[str, Optional[str]]] = {}
         self._connect(host_alias, password)
         self._get_protocol(simulation)
@@ -143,7 +144,14 @@ class OpenTrons:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps({"tip_status": {}}, indent=2))
 
+    def _register_tip_tracker_memory(self, tiprack_nickname: str, source_doc: Dict[str, Any]) -> None:
+        # Dict-based labware input can still be tracked in-memory when no backing file path is supplied.
+        self._tip_tracker_memory_docs[tiprack_nickname] = json.loads(json.dumps(source_doc))
+
     def _read_tip_status_doc(self, tiprack_nickname: str) -> Dict[str, Any]:
+        memory_doc = self._tip_tracker_memory_docs.get(tiprack_nickname)
+        if memory_doc is not None:
+            return json.loads(json.dumps(memory_doc))
         path = self._tip_trackers[tiprack_nickname]
         if not path.exists() or path.stat().st_size == 0:
             return {"tip_status": {}}
@@ -241,8 +249,11 @@ class OpenTrons:
         else:
             existing = doc.get("tip_status", {})
             doc["tip_status"] = self._write_status_obj_like(existing, well, status)
-        path = self._tip_trackers[tiprack_nickname]
-        path.write_text(json.dumps(doc, indent=2, sort_keys=True))
+        if tiprack_nickname in self._tip_tracker_memory_docs:
+            self._tip_tracker_memory_docs[tiprack_nickname] = doc
+        else:
+            path = self._tip_trackers[tiprack_nickname]
+            path.write_text(json.dumps(doc, indent=2, sort_keys=True))
 
     def _get_tip_status(self, tiprack_nickname: str, well: str) -> Optional[str]:
         doc = self._read_tip_status_doc(tiprack_nickname)
@@ -339,6 +350,8 @@ class OpenTrons:
             if not self._labware_meta[nickname]["is_tiprack"]:
                 raise ValueError(f"tip_status_file was set for non-tiprack labware: {nickname}")
             self._register_tip_tracker(tiprack_nickname=nickname, status_file=tip_status_file)
+        elif self._labware_meta[nickname]["is_tiprack"] and self._has_tip_status_payload(labware):
+            self._register_tip_tracker_memory(tiprack_nickname=nickname, source_doc=labware)
 
     @flow
     def configure_tip_tracker(self, tiprack_nickname: str, status_file: str):
