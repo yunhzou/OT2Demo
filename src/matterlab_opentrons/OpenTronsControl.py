@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, Optional, Tuple, Union
 
 from prefect import flow
 
@@ -15,6 +15,10 @@ class OpenTrons:
     """Thin SSH-backed wrapper for streaming Opentrons Python commands."""
 
     def __init__(self, host_alias: str = None, password: str = "", simulation: bool = False):
+        self._labware_meta: Dict[str, Dict[str, Any]] = {}
+        self._current_location_context: Dict[str, Optional[str]] = {"labware_nickname": None, "position": None}
+        self._tip_trackers: Dict[str, Path] = {}
+        self._mounted_tips: Dict[str, Dict[str, Optional[str]]] = {}
         self._connect(host_alias, password)
         self._get_protocol(simulation)
 
@@ -102,7 +106,178 @@ class OpenTrons:
     def _setup_device_metadata(self):
         self.invoke("p300.well_bottom_clearance.dispense=10")
 
-    def load_labware(self, labware: Dict):
+    def _is_tiprack_labware(self, labware: Dict[str, Any]) -> bool:
+        config = labware.get("config") or {}
+        if isinstance(config, dict):
+            params = config.get("parameters") or {}
+            if isinstance(params, dict) and params.get("isTiprack"):
+                return True
+        loadname = str(labware.get("loadname") or "").lower()
+        return "tiprack" in loadname
+
+    def _has_tip_status_payload(self, labware: Dict[str, Any]) -> bool:
+        if "tip_status" in labware:
+            return True
+        config = labware.get("config")
+        return isinstance(config, dict) and "tip_status" in config
+
+    def _resolve_labware_input(self, labware: Union[Dict[str, Any], str, Path]) -> Tuple[Dict[str, Any], Optional[Path]]:
+        if isinstance(labware, dict):
+            return dict(labware), None
+        if isinstance(labware, (str, Path)):
+            src = Path(labware)
+            if not src.is_absolute():
+                src = Path.cwd() / src
+            payload = json.loads(src.read_text())
+            if not isinstance(payload, dict):
+                raise ValueError(f"Labware JSON must contain an object: {src}")
+            return payload, src
+        raise TypeError(f"Unsupported labware input type: {type(labware)!r}")
+
+    def _register_tip_tracker(self, tiprack_nickname: str, status_file: str) -> None:
+        path = Path(status_file)
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        self._tip_trackers[tiprack_nickname] = path
+        if not path.exists() or path.stat().st_size == 0:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"tip_status": {}}, indent=2))
+
+    def _read_tip_status_doc(self, tiprack_nickname: str) -> Dict[str, Any]:
+        path = self._tip_trackers[tiprack_nickname]
+        if not path.exists() or path.stat().st_size == 0:
+            return {"tip_status": {}}
+        raw = json.loads(path.read_text())
+        if not isinstance(raw, dict):
+            raise ValueError(f"Tip status file must contain a JSON object: {path}")
+        return raw
+
+    def _well_to_row_col(self, well: str) -> Optional[tuple]:
+        token = str(well).strip().upper()
+        if len(token) < 2 or not token[0].isalpha():
+            return None
+        row = ord(token[0]) - ord("A")
+        try:
+            col = int(token[1:]) - 1
+        except ValueError:
+            return None
+        if row < 0 or col < 0:
+            return None
+        return row, col
+
+    def _status_obj_to_map(self, status_obj: Any) -> Dict[str, Any]:
+        if status_obj is None:
+            return {}
+        if isinstance(status_obj, dict):
+            return status_obj
+        if isinstance(status_obj, list):
+            out: Dict[str, Any] = {}
+            for r, row_vals in enumerate(status_obj):
+                if not isinstance(row_vals, list):
+                    continue
+                for c, value in enumerate(row_vals):
+                    out[f"{chr(ord('A') + r)}{c + 1}"] = value
+            return out
+        raise ValueError("tip_status must be a JSON object {well: status} or 2D list [rows][cols]")
+
+    def _write_status_obj_like(self, status_obj: Any, well: str, value: str) -> Any:
+        rc = self._well_to_row_col(well)
+        if isinstance(status_obj, list) and rc:
+            row_idx, col_idx = rc
+            while len(status_obj) <= row_idx:
+                status_obj.append([])
+            while len(status_obj[row_idx]) <= col_idx:
+                status_obj[row_idx].append("new")
+            status_obj[row_idx][col_idx] = value
+            return status_obj
+        if isinstance(status_obj, dict):
+            status_obj[well] = value
+            return status_obj
+        out = self._status_obj_to_map(status_obj)
+        out[well] = value
+        return out
+
+    def _get_tip_status_map(self, doc: Dict[str, Any]) -> Dict[str, Any]:
+        if "tip_status" in doc:
+            return self._status_obj_to_map(doc.get("tip_status"))
+        config = doc.get("config")
+        if isinstance(config, dict) and "tip_status" in config:
+            return self._status_obj_to_map(config.get("tip_status"))
+        return {}
+
+    def _write_tip_status(self, tiprack_nickname: str, well: str, status: str) -> None:
+        doc = self._read_tip_status_doc(tiprack_nickname)
+        if "tip_status" in doc:
+            doc["tip_status"] = self._write_status_obj_like(doc.get("tip_status"), well, status)
+        elif isinstance(doc.get("config"), dict) and "tip_status" in doc["config"]:
+            doc["config"]["tip_status"] = self._write_status_obj_like(doc["config"].get("tip_status"), well, status)
+        else:
+            existing = doc.get("tip_status", {})
+            doc["tip_status"] = self._write_status_obj_like(existing, well, status)
+        path = self._tip_trackers[tiprack_nickname]
+        path.write_text(json.dumps(doc, indent=2, sort_keys=True))
+
+    def _get_tip_status(self, tiprack_nickname: str, well: str) -> Optional[str]:
+        doc = self._read_tip_status_doc(tiprack_nickname)
+        status_map = self._get_tip_status_map(doc)
+        status = status_map.get(well)
+        if status is None:
+            return None
+        return str(status)
+
+    def _is_tiprack(self, labware_nickname: Optional[str]) -> bool:
+        if not labware_nickname:
+            return False
+        return bool((self._labware_meta.get(labware_nickname) or {}).get("is_tiprack"))
+
+    def _validate_tip_pick(
+        self,
+        tiprack_nickname: str,
+        well: str,
+        sample_id: Optional[str] = None,
+        force_pick: bool = False,
+    ) -> Optional[str]:
+        if tiprack_nickname not in self._tip_trackers:
+            return None
+
+        status = self._get_tip_status(tiprack_nickname, well)
+        normalized = (status or "").strip().lower()
+        if normalized in {"", "new", "unused", "clean", "available"}:
+            return None
+        if normalized == "empty":
+            raise ValueError(f"Tip not available: {tiprack_nickname} {well} is empty.")
+        if sample_id and status == sample_id:
+            return status
+        if force_pick:
+            return status
+        if sample_id:
+            raise ValueError(
+                f"Tip not available: {tiprack_nickname} {well} touched {status!r}, "
+                f"requested {sample_id!r}. Use force_pick=True to override."
+            )
+        raise ValueError(
+            f"Tip not available: {tiprack_nickname} {well} touched {status!r}. "
+            "Provide sample_id matching that status or set force_pick=True."
+        )
+
+    def _mark_tip_touched_from_current_location(self, pip_name: str) -> None:
+        mounted = self._mounted_tips.get(pip_name)
+        if not mounted:
+            return
+        labware_nickname = self._current_location_context.get("labware_nickname")
+        position = self._current_location_context.get("position")
+        if not labware_nickname or not position:
+            return
+        if self._is_tiprack(labware_nickname):
+            return
+        sample_id = f"{labware_nickname}_{position}"
+        mounted["last_sample"] = sample_id
+        tiprack = mounted.get("tiprack_nickname")
+        well = mounted.get("well")
+        if tiprack and well and tiprack in self._tip_trackers:
+            self._write_tip_status(tiprack, well, sample_id)
+
+    def load_labware(self, labware: Union[Dict[str, Any], str, Path]):
         # sample labware Dict
         # lw = {
         #     "nickname": "96 well plate",
@@ -111,6 +286,7 @@ class OpenTrons:
         #     "ot_default": True,
         #     "config": {}
         # }
+        labware, source_path = self._resolve_labware_input(labware)
         if labware["ot_default"]:
             self._load_default_labware(
                 nickname=labware["nickname"],
@@ -123,6 +299,23 @@ class OpenTrons:
                 labware_config=labware["config"],
                 location=labware["location"],
             )
+        nickname = labware["nickname"]
+        self._labware_meta[nickname] = {"is_tiprack": self._is_tiprack_labware(labware)}
+        tip_status_file = labware.get("tip_status_file")
+        if not tip_status_file and source_path and self._has_tip_status_payload(labware):
+            tip_status_file = str(source_path)
+        elif tip_status_file and source_path:
+            tip_path = Path(tip_status_file)
+            if not tip_path.is_absolute():
+                tip_status_file = str((source_path.parent / tip_path).resolve())
+        if tip_status_file:
+            if not self._labware_meta[nickname]["is_tiprack"]:
+                raise ValueError(f"tip_status_file was set for non-tiprack labware: {nickname}")
+            self._register_tip_tracker(tiprack_nickname=nickname, status_file=tip_status_file)
+
+    @flow
+    def configure_tip_tracker(self, tiprack_nickname: str, status_file: str):
+        self._register_tip_tracker(tiprack_nickname=tiprack_nickname, status_file=status_file)
     
     @flow
     def load_instrument(self, instrument: Dict):
@@ -227,11 +420,13 @@ class OpenTrons:
     ):
         append = self._location_suffix(top=top, bottom=bottom, center=center)
         self.invoke(f"location = {labware_nickname}['{position}']{append}")
+        self._current_location_context = {"labware_nickname": labware_nickname, "position": position}
         
     @flow
     def get_location_absolute(self, x: float, y: float, z: float, reference: str = None):
         # reference is deck position "1" "D1" etc. Default is None as deck itself
         self.invoke(f"location = Location(Point({x},{y},{z}), '{str(reference)}')")
+        self._current_location_context = {"labware_nickname": None, "position": None}
 
     @flow
     def move_to_pip(self, pip_name: str):
@@ -255,8 +450,25 @@ class OpenTrons:
         self.invoke(f"{pip_name}.move_to({kwargs})")
 
     @flow
-    def pick_up_tip(self, pip_name: str):
+    def pick_up_tip(self, pip_name: str, sample_id: str = None, force_pick: bool = False):
+        tiprack = self._current_location_context.get("labware_nickname")
+        well = self._current_location_context.get("position")
+        prior_status = None
+        if tiprack and well and self._is_tiprack(tiprack):
+            prior_status = self._validate_tip_pick(
+                tiprack_nickname=tiprack,
+                well=well,
+                sample_id=sample_id,
+                force_pick=force_pick,
+            )
         self.invoke(f"{pip_name}.pick_up_tip(location = location)")
+        if tiprack and well and self._is_tiprack(tiprack):
+            self._mounted_tips[pip_name] = {
+                "tiprack_nickname": tiprack,
+                "well": well,
+                "last_sample": sample_id or prior_status,
+                "origin_status": prior_status,
+            }
 
     @flow
     def pick_up_tip_advanced(
@@ -266,7 +478,19 @@ class OpenTrons:
         presses: int = None,
         increment: float = None,
         prep_after: bool = None,
+        sample_id: str = None,
+        force_pick: bool = False,
     ):
+        tiprack = self._current_location_context.get("labware_nickname")
+        well = self._current_location_context.get("position")
+        prior_status = None
+        if location and tiprack and well and self._is_tiprack(tiprack):
+            prior_status = self._validate_tip_pick(
+                tiprack_nickname=tiprack,
+                well=well,
+                sample_id=sample_id,
+                force_pick=force_pick,
+            )
         kwargs = self._format_kwargs(
             location="__LOCATION_SENTINEL__" if location else None,
             presses=presses,
@@ -275,19 +499,51 @@ class OpenTrons:
         )
         kwargs = kwargs.replace("'__LOCATION_SENTINEL__'", "location")
         self.invoke(f"{pip_name}.pick_up_tip({kwargs})")
+        if location and tiprack and well and self._is_tiprack(tiprack):
+            self._mounted_tips[pip_name] = {
+                "tiprack_nickname": tiprack,
+                "well": well,
+                "last_sample": sample_id or prior_status,
+                "origin_status": prior_status,
+            }
 
     @flow
     def return_tip(self, pip_name: str):
         self.invoke(f"{pip_name}.return_tip()")
+        mounted = self._mounted_tips.pop(pip_name, None)
+        if not mounted:
+            return
+        tiprack = mounted.get("tiprack_nickname")
+        well = mounted.get("well")
+        if not tiprack or not well or tiprack not in self._tip_trackers:
+            return
+        status = mounted.get("last_sample") or mounted.get("origin_status") or "new"
+        self._write_tip_status(tiprack, well, status)
 
     @flow
     def return_tip_advanced(self, pip_name: str, home_after: bool = None):
         kwargs = self._format_kwargs(home_after=home_after)
         self.invoke(f"{pip_name}.return_tip({kwargs})" if kwargs else f"{pip_name}.return_tip()")
+        mounted = self._mounted_tips.pop(pip_name, None)
+        if not mounted:
+            return
+        tiprack = mounted.get("tiprack_nickname")
+        well = mounted.get("well")
+        if not tiprack or not well or tiprack not in self._tip_trackers:
+            return
+        status = mounted.get("last_sample") or mounted.get("origin_status") or "new"
+        self._write_tip_status(tiprack, well, status)
 
     @flow
     def drop_tip(self, pip_name: str):
         self.invoke(f"{pip_name}.drop_tip()")
+        mounted = self._mounted_tips.pop(pip_name, None)
+        if not mounted:
+            return
+        tiprack = mounted.get("tiprack_nickname")
+        well = mounted.get("well")
+        if tiprack and well and tiprack in self._tip_trackers:
+            self._write_tip_status(tiprack, well, "empty")
 
     @flow
     def drop_tip_advanced(self, pip_name: str, location: bool = False, home_after: bool = None):
@@ -297,6 +553,13 @@ class OpenTrons:
         )
         kwargs = kwargs.replace("'__LOCATION_SENTINEL__'", "location")
         self.invoke(f"{pip_name}.drop_tip({kwargs})" if kwargs else f"{pip_name}.drop_tip()")
+        mounted = self._mounted_tips.pop(pip_name, None)
+        if not mounted:
+            return
+        tiprack = mounted.get("tiprack_nickname")
+        well = mounted.get("well")
+        if tiprack and well and tiprack in self._tip_trackers:
+            self._write_tip_status(tiprack, well, "empty")
 
     @flow
     def prepare_aspirate(self, pip_name: str):
@@ -320,6 +583,7 @@ class OpenTrons:
         )
         kwargs = kwargs.replace("'__LOCATION_SENTINEL__'", "location")
         self.invoke(f"{pip_name}.aspirate({kwargs})")
+        self._mark_tip_touched_from_current_location(pip_name)
 
     @flow
     def dispense(
@@ -341,6 +605,7 @@ class OpenTrons:
         )
         kwargs = kwargs.replace("'__LOCATION_SENTINEL__'", "location")
         self.invoke(f"{pip_name}.dispense({kwargs})")
+        self._mark_tip_touched_from_current_location(pip_name)
 
     @flow
     def air_gap(
@@ -371,6 +636,7 @@ class OpenTrons:
         )
         kwargs = kwargs.replace("'__LOCATION_SENTINEL__'", "location")
         self.invoke(f"{pip_name}.mix({kwargs})")
+        self._mark_tip_touched_from_current_location(pip_name)
 
     @flow
     def touch_tip(
@@ -386,6 +652,15 @@ class OpenTrons:
             f"{pip_name}.touch_tip({labware_nickname}['{position}'], "
             f"radius = {radius}, v_offset = {v_offset}, speed = {speed})"
         )
+        if not self._is_tiprack(labware_nickname):
+            mounted = self._mounted_tips.get(pip_name)
+            if mounted:
+                sample_id = f"{labware_nickname}_{position}"
+                mounted["last_sample"] = sample_id
+                tiprack = mounted.get("tiprack_nickname")
+                well = mounted.get("well")
+                if tiprack and well and tiprack in self._tip_trackers:
+                    self._write_tip_status(tiprack, well, sample_id)
 
     @flow
     def blow_out(self, pip_name: str):
