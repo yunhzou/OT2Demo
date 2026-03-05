@@ -14,7 +14,7 @@ PROTOCOL_API_VERSION = "2.21"
 class OpenTrons:
     """Thin SSH-backed wrapper for streaming Opentrons Python commands."""
 
-    def __init__(self, host_alias: str = None, password: str = "", simulation: bool = False):
+    def __init__(self, host_alias: Optional[str] = None, password: str = "", simulation: bool = False):
         self._labware_meta: Dict[str, Dict[str, Any]] = {}
         self._current_location_context: Dict[str, Optional[str]] = {"labware_nickname": None, "position": None}
         self._tip_trackers: Dict[str, Path] = {}
@@ -22,7 +22,7 @@ class OpenTrons:
         self._connect(host_alias, password)
         self._get_protocol(simulation)
 
-    def _connect(self, host_alias: str = None, password: str = ""):
+    def _connect(self, host_alias: Optional[str] = None, password: str = ""):
         self.client = SSHClient(
             hostname=os.getenv("HOSTNAME"),
             username=os.getenv("USERNAME"),
@@ -506,7 +506,7 @@ class OpenTrons:
         self._current_location_context = {"labware_nickname": labware_nickname, "position": position}
         
     @flow
-    def get_location_absolute(self, x: float, y: float, z: float, reference: str = None):
+    def get_location_absolute(self, x: float, y: float, z: float, reference: Optional[str] = None):
         # reference is deck position "1" "D1" etc. Default is None as deck itself
         self.invoke(f"location = Location(Point({x},{y},{z}), '{str(reference)}')")
         self._current_location_context = {"labware_nickname": None, "position": None}
@@ -519,9 +519,9 @@ class OpenTrons:
     def move_to_pip_advanced(
         self,
         pip_name: str,
-        speed: float = None,
-        force_direct: bool = None,
-        minimum_z_height: float = None,
+        speed: Optional[float] = None,
+        force_direct: Optional[bool] = None,
+        minimum_z_height: Optional[float] = None,
     ):
         kwargs = self._format_kwargs(
             location="__LOCATION_SENTINEL__",
@@ -558,9 +558,9 @@ class OpenTrons:
         self,
         pip_name: str,
         location: bool = True,
-        presses: int = None,
-        increment: float = None,
-        prep_after: bool = None,
+        presses: Optional[int] = None,
+        increment: Optional[float] = None,
+        prep_after: Optional[bool] = None,
         sample_id: Optional[str] = None,
         force_pick: bool = False,
     ):
@@ -604,7 +604,7 @@ class OpenTrons:
         self._write_tip_status(tiprack, well, status)
 
     @flow
-    def return_tip_advanced(self, pip_name: str, home_after: bool = None):
+    def return_tip_advanced(self, pip_name: str, home_after: Optional[bool] = None):
         kwargs = self._format_kwargs(home_after=home_after)
         self.invoke(f"{pip_name}.return_tip({kwargs})" if kwargs else f"{pip_name}.return_tip()")
         mounted = self._mounted_tips.pop(pip_name, None)
@@ -629,7 +629,7 @@ class OpenTrons:
             self._write_tip_status(tiprack, well, "empty")
 
     @flow
-    def drop_tip_advanced(self, pip_name: str, location: bool = False, home_after: bool = None):
+    def drop_tip_advanced(self, pip_name: str, location: bool = False, home_after: Optional[bool] = None):
         kwargs = self._format_kwargs(
             location="__LOCATION_SENTINEL__" if location else None,
             home_after=home_after,
@@ -652,10 +652,10 @@ class OpenTrons:
     def aspirate(
         self,
         pip_name: str,
-        volume: float = None,
+        volume: Optional[float] = None,
         rate: float = 1.0,
-        flow_rate: float = None,
-        movement_delay: float = None,
+        flow_rate: Optional[float] = None,
+        movement_delay: Optional[float] = None,
     ):
         kwargs = self._format_kwargs(
             volume=volume,
@@ -672,11 +672,11 @@ class OpenTrons:
     def dispense(
         self,
         pip_name: str,
-        volume: float = None,
-        push_out: float = None,
+        volume: Optional[float] = None,
+        push_out: Optional[float] = None,
         rate: float = 1.0,
-        flow_rate: float = None,
-        movement_delay: float = None,
+        flow_rate: Optional[float] = None,
+        movement_delay: Optional[float] = None,
     ):
         kwargs = self._format_kwargs(
             volume=volume,
@@ -695,10 +695,10 @@ class OpenTrons:
         self,
         pip_name: str,
         volume: float,
-        height: float = None,
-        in_place: bool = None,
+        height: Optional[float] = None,
+        in_place: Optional[bool] = None,
         rate: float = 1.0,
-        flow_rate: float = None,
+        flow_rate: Optional[float] = None,
     ):
         kwargs = self._format_kwargs(
             volume=volume,
@@ -710,7 +710,7 @@ class OpenTrons:
         self.invoke(f"{pip_name}.air_gap({kwargs})")
 
     @flow
-    def mix(self, pip_name: str, repetitions: int, volume: float = None, rate: float = 1.0):
+    def mix(self, pip_name: str, repetitions: int, volume: Optional[float] = None, rate: float = 1.0):
         kwargs = self._format_kwargs(
             repetitions=repetitions,
             volume=volume,
@@ -761,9 +761,9 @@ class OpenTrons:
     def set_flow_rate(
         self,
         pip_name: str,
-        aspirate: float = None,
-        dispense: float = None,
-        blow_out: float = None,
+        aspirate: Optional[float] = None,
+        dispense: Optional[float] = None,
+        blow_out: Optional[float] = None,
     ):
         if aspirate is not None:
             self.invoke(f"{pip_name}.flow_rate.aspirate = {aspirate}")
@@ -783,9 +783,9 @@ class OpenTrons:
     def set_plunger_speed(
         self,
         pip_name: str,
-        aspirate: float = None,
-        dispense: float = None,
-        blow_out: float = None,
+        aspirate: Optional[float] = None,
+        dispense: Optional[float] = None,
+        blow_out: Optional[float] = None,
     ):
         # Legacy-style plunger speed properties; may be unavailable on newer API contexts.
         if aspirate is not None:
@@ -799,8 +799,8 @@ class OpenTrons:
     def set_well_bottom_clearance(
         self,
         pip_name: str,
-        aspirate: float = None,
-        dispense: float = None,
+        aspirate: Optional[float] = None,
+        dispense: Optional[float] = None,
     ):
         if aspirate is not None:
             self.invoke(f"{pip_name}.well_bottom_clearance.aspirate = {aspirate}")
@@ -895,7 +895,7 @@ class OpenTrons:
         return {"min": min_width, "max": max_width}
 
     @flow
-    def gripper_move_to_absolute(self, x: float, y: float, z: float, speed: float = None):
+    def gripper_move_to_absolute(self, x: float, y: float, z: float, speed: Optional[float] = None):
         """Move gripper critical point to an absolute deck coordinate using low-level hardware API."""
         self._init_low_level_hardware()
         self.invoke("assert hardware.has_gripper(), 'No gripper attached'")
@@ -978,7 +978,12 @@ class OpenTrons:
         self.invoke(f"{nickname}.deactivate()")
 
     @flow
-    def magmod_engage(self, nickname: str, height_from_base: float = None, offset: float = None):
+    def magmod_engage(
+        self,
+        nickname: str,
+        height_from_base: Optional[float] = None,
+        offset: Optional[float] = None,
+    ):
         kwargs = self._format_kwargs(height_from_base=height_from_base, offset=offset)
         self.invoke(f"{nickname}.engage({kwargs})" if kwargs else f"{nickname}.engage()")
 
@@ -1007,10 +1012,10 @@ class OpenTrons:
         self,
         nickname: str,
         temperature: float,
-        hold_time_seconds: float = None,
-        hold_time_minutes: float = None,
-        block_max_volume: float = None,
-        ramp_rate: float = None,
+        hold_time_seconds: Optional[float] = None,
+        hold_time_minutes: Optional[float] = None,
+        block_max_volume: Optional[float] = None,
+        ramp_rate: Optional[float] = None,
     ):
         kwargs = self._format_kwargs(
             temperature=temperature,
