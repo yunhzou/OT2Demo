@@ -85,14 +85,21 @@ class LabwareSpec:
     loadname: str = ""
     config: Dict[str, Any] = field(default_factory=dict)
     config_path: str = ""
+    tip_status_file: str = ""
 
     def to_runtime_dict(self, base_dir: Optional[Path] = None) -> Dict[str, Any]:
         resolved_config = self.config
+        resolved_tip_status_file = self.tip_status_file
         if not self.ot_default and not resolved_config and self.config_path:
             cfg_path = Path(self.config_path)
             if not cfg_path.is_absolute() and base_dir is not None:
                 cfg_path = base_dir / cfg_path
             resolved_config = json.loads(cfg_path.read_text())
+        if resolved_tip_status_file:
+            status_path = Path(resolved_tip_status_file)
+            if not status_path.is_absolute() and base_dir is not None:
+                status_path = base_dir / status_path
+            resolved_tip_status_file = str(status_path)
 
         data = {
             "nickname": self.nickname,
@@ -102,6 +109,8 @@ class LabwareSpec:
         }
         if self.ot_default:
             data["loadname"] = self.loadname
+        if resolved_tip_status_file:
+            data["tip_status_file"] = resolved_tip_status_file
         return data
 
 
