@@ -29,13 +29,7 @@ def demo_ot2(simulation: bool = True):
     ]
     tips = [
         {"nickname": "tip_20_96_1", "config": tips_1, "location": "7", "ot_default": False},
-        {
-            "nickname": "tip_300_96_1",
-            "loadname": "opentrons_96_tiprack_300ul",
-            "location": "8",
-            "ot_default": True,
-            "config": {},
-        },
+        "demo/300_tip.json",
     ]
     for labware in plates + tips:
         ot.load_labware(labware)
@@ -43,7 +37,7 @@ def demo_ot2(simulation: bool = True):
     ot.load_instrument({"nickname": "p20", "instrument_name": "p20_single_gen2", "mount": "left", "ot_default": True})
     ot.load_instrument({"nickname": "p300", "instrument_name": "p300_single_gen2", "mount": "right", "ot_default": True})
 
-    # p300 smoke test: beaker -> plate
+    # p300 example 1: pick a specific tip (A1), use it, then return it.
     ot.get_location_from_labware(labware_nickname="tip_300_96_1", position="A1", top=0)
     ot.pick_up_tip(pip_name="p300")
     ot.get_location_from_labware(labware_nickname="beaker", position="A1", bottom=5)
@@ -54,6 +48,23 @@ def demo_ot2(simulation: bool = True):
     ot.dispense(pip_name="p300", volume=150)
     ot.blow_out(pip_name="p300")
     ot.return_tip(pip_name="p300")
+
+    # p300 example 2: auto-pick next available tip from tracker.
+    picked_well = ot.pick_up_next_available_tip(
+        pip_name="p300",
+        tiprack_nickname="tip_300_96_1",
+        sample_id="plate_96_1_A2",
+        start_well="A1",
+    )
+    print(f"Auto-picked next available p300 tip: {picked_well}")
+    ot.get_location_from_labware(labware_nickname="beaker", position="A1", bottom=5)
+    ot.move_to_pip(pip_name="p300")
+    ot.aspirate(pip_name="p300", volume=50)
+    ot.get_location_from_labware(labware_nickname="plate_96_1", position="A2", top=-1)
+    ot.move_to_pip(pip_name="p300")
+    ot.dispense(pip_name="p300", volume=50)
+    ot.blow_out(pip_name="p300")
+    ot.drop_tip(pip_name="p300")
 
     # p20 smoke test: vial -> plate
     ot.get_location_from_labware(labware_nickname="tip_20_96_1", position="A1", top=0)
