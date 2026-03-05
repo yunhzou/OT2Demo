@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from prefect import flow
 
@@ -165,6 +165,12 @@ class OpenTrons:
             return None
         return row, col
 
+    def _well_sort_key(self, well: str) -> Tuple[int, int]:
+        rc = self._well_to_row_col(well)
+        if rc is None:
+            return (10_000, 10_000)
+        return rc
+
     def _status_obj_to_map(self, status_obj: Any) -> Dict[str, Any]:
         if status_obj is None:
             return {}
@@ -204,6 +210,27 @@ class OpenTrons:
         if isinstance(config, dict) and "tip_status" in config:
             return self._status_obj_to_map(config.get("tip_status"))
         return {}
+
+    def _list_tracked_tip_wells(self, tiprack_nickname: str) -> List[str]:
+        doc = self._read_tip_status_doc(tiprack_nickname)
+        status_obj: Any = None
+        if "tip_status" in doc:
+            status_obj = doc.get("tip_status")
+        elif isinstance(doc.get("config"), dict):
+            status_obj = doc["config"].get("tip_status")
+
+        if isinstance(status_obj, list):
+            row_count = len(status_obj)
+            col_count = max((len(r) for r in status_obj if isinstance(r, list)), default=0)
+            if row_count and col_count:
+                return [f"{chr(ord('A') + r)}{c + 1}" for c in range(col_count) for r in range(row_count)]
+
+        status_map = self._status_obj_to_map(status_obj)
+        if status_map:
+            return sorted(status_map.keys(), key=self._well_sort_key)
+
+        # Default 96-well ordering (column-major) used by standard Opentrons tipracks.
+        return [f"{chr(ord('A') + r)}{c + 1}" for c in range(12) for r in range(8)]
 
     def _write_tip_status(self, tiprack_nickname: str, well: str, status: str) -> None:
         doc = self._read_tip_status_doc(tiprack_nickname)
@@ -316,6 +343,62 @@ class OpenTrons:
     @flow
     def configure_tip_tracker(self, tiprack_nickname: str, status_file: str):
         self._register_tip_tracker(tiprack_nickname=tiprack_nickname, status_file=status_file)
+
+    @flow
+    def get_next_available_tip(
+        self,
+        tiprack_nickname: str,
+        sample_id: str = None,
+        force_pick: bool = False,
+        start_well: str = None,
+    ):
+        if tiprack_nickname not in self._tip_trackers:
+            raise ValueError(
+                f"No tip tracker configured for {tiprack_nickname!r}. "
+                "Provide tip_status_file or load labware from a JSON containing tip_status."
+            )
+
+        wells = self._list_tracked_tip_wells(tiprack_nickname)
+        if start_well:
+            if start_well not in wells:
+                raise ValueError(f"start_well {start_well!r} is not in tracked wells for {tiprack_nickname!r}")
+            wells = wells[wells.index(start_well) :]
+
+        for well in wells:
+            try:
+                self._validate_tip_pick(
+                    tiprack_nickname=tiprack_nickname,
+                    well=well,
+                    sample_id=sample_id,
+                    force_pick=force_pick,
+                )
+                return well
+            except ValueError:
+                continue
+
+        raise ValueError(
+            f"No available tip found in {tiprack_nickname!r} "
+            f"(sample_id={sample_id!r}, force_pick={force_pick})."
+        )
+
+    @flow
+    def pick_up_next_available_tip(
+        self,
+        pip_name: str,
+        tiprack_nickname: str,
+        sample_id: str = None,
+        force_pick: bool = False,
+        start_well: str = None,
+    ):
+        well = self.get_next_available_tip(
+            tiprack_nickname=tiprack_nickname,
+            sample_id=sample_id,
+            force_pick=force_pick,
+            start_well=start_well,
+        )
+        self.get_location_from_labware(labware_nickname=tiprack_nickname, position=well, top=0)
+        self.pick_up_tip(pip_name=pip_name, sample_id=sample_id, force_pick=force_pick)
+        return well
     
     @flow
     def load_instrument(self, instrument: Dict):
