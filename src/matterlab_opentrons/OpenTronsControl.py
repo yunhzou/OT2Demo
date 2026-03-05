@@ -164,6 +164,10 @@ class OpenTrons:
         self.invoke(f"{nickname}_adapter = {nickname}.load_adapter(name = '{adapter}')")
 
     @flow
+    def load_trash_bin(self, nickname: str = "default_trash", location: str = "A3"):
+        self.invoke(f"{nickname} = protocol.load_trash_bin(location = '{location}')")
+
+    @flow
     def home(self):
         self.invoke("protocol.home()")
 
