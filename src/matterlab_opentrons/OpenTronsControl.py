@@ -231,14 +231,14 @@ class OpenTrons:
             row_count = len(status_obj)
             col_count = max((len(r) for r in status_obj if isinstance(r, list)), default=0)
             if row_count and col_count:
-                return [f"{chr(ord('A') + r)}{c + 1}" for c in range(col_count) for r in range(row_count)]
+                return [f"{chr(ord('A') + r)}{c + 1}" for r in range(row_count) for c in range(col_count)]
 
         status_map = self._status_obj_to_map(status_obj)
         if status_map:
             return sorted(status_map.keys(), key=self._well_sort_key)
 
-        # Default 96-well ordering (column-major) used by standard Opentrons tipracks.
-        return [f"{chr(ord('A') + r)}{c + 1}" for c in range(12) for r in range(8)]
+        # Default 96-well ordering in row-major sequence.
+        return [f"{chr(ord('A') + r)}{c + 1}" for r in range(8) for c in range(12)]
 
     def _write_tip_status(self, tiprack_nickname: str, well: str, status: str) -> None:
         doc = self._read_tip_status_doc(tiprack_nickname)
