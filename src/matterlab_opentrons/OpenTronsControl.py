@@ -348,9 +348,9 @@ class OpenTrons:
     def get_next_available_tip(
         self,
         tiprack_nickname: str,
-        sample_id: str = None,
+        sample_id: Optional[str] = None,
         force_pick: bool = False,
-        start_well: str = None,
+        start_well: Optional[str] = None,
     ):
         if tiprack_nickname not in self._tip_trackers:
             raise ValueError(
@@ -386,9 +386,9 @@ class OpenTrons:
         self,
         pip_name: str,
         tiprack_nickname: str,
-        sample_id: str = None,
+        sample_id: Optional[str] = None,
         force_pick: bool = False,
-        start_well: str = None,
+        start_well: Optional[str] = None,
     ):
         well = self.get_next_available_tip(
             tiprack_nickname=tiprack_nickname,
@@ -533,7 +533,7 @@ class OpenTrons:
         self.invoke(f"{pip_name}.move_to({kwargs})")
 
     @flow
-    def pick_up_tip(self, pip_name: str, sample_id: str = None, force_pick: bool = False):
+    def pick_up_tip(self, pip_name: str, sample_id: Optional[str] = None, force_pick: bool = False):
         tiprack = self._current_location_context.get("labware_nickname")
         well = self._current_location_context.get("position")
         prior_status = None
@@ -561,7 +561,7 @@ class OpenTrons:
         presses: int = None,
         increment: float = None,
         prep_after: bool = None,
-        sample_id: str = None,
+        sample_id: Optional[str] = None,
         force_pick: bool = False,
     ):
         tiprack = self._current_location_context.get("labware_nickname")
