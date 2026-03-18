@@ -189,6 +189,62 @@ class DilutionSpec:
 
 
 @dataclass
+class CsvDissolutionTarget:
+    plate: str
+    mix_repetitions: int = 3
+    mix_volume_ul: float = 200
+    delay_seconds: float = 1
+    blow_out: bool = False
+
+
+@dataclass
+class CsvDilutionTarget:
+    plate: str
+    prefill: bool = True
+    mix_repetitions: int = 3
+    mix_volume_ul: float = 200
+    delay_seconds: float = 1
+    blow_out: bool = True
+
+
+@dataclass
+class CsvPlateSeriesSpec:
+    """CSV matrix workflow keyed by plate nickname (<plate>.csv)."""
+
+    # Dissolution volumes are loaded from <dissolution.plate>.csv
+    dissolution: CsvDissolutionTarget = field(default_factory=lambda: CsvDissolutionTarget(plate="plate_96_1"))
+    # Dilution transfer volumes are loaded from <plate>.csv for each target plate.
+    dilutions: List[CsvDilutionTarget] = field(default_factory=list)
+
+    solvent_labware: str = "resovir"
+    solvent_well: str = "A1"
+    solvent_bottom: float = 10
+
+    dissolution_target_bottom: float = 1
+    transfer_source_bottom: float = 3
+    transfer_source_lift_top: Optional[float] = 5
+    transfer_destination_bottom: float = 3
+
+
+
+
+def _parse_csv_plate_series(raw: Dict[str, Any]) -> CsvPlateSeriesSpec:
+    payload = dict(raw)
+
+    dissolution_raw = payload.get("dissolution")
+    if isinstance(dissolution_raw, list):
+        if len(dissolution_raw) != 1:
+            raise ValueError("csv_plate_series.dissolution list must contain exactly one object")
+        dissolution_raw = dissolution_raw[0]
+    if not isinstance(dissolution_raw, dict):
+        raise ValueError("csv_plate_series.dissolution must be an object or [object]")
+    payload["dissolution"] = CsvDissolutionTarget(**dissolution_raw)
+
+    payload["dilutions"] = [CsvDilutionTarget(**item) for item in payload.get("dilutions", [])]
+    return CsvPlateSeriesSpec(**payload)
+
+
+@dataclass
 class PlateProcessSpec:
     """Generic well-wise OT2 process composed from dissolve/transfer/dilution blocks."""
 
@@ -243,6 +299,7 @@ class PlateProcessSpec:
     prefill: Optional[DilutionSpec] = None
     transfer_2: Optional[TransferSpec] = None
     dilution: Optional[DilutionSpec] = None
+    csv_plate_series: Optional[CsvPlateSeriesSpec] = None
     stages: List[Dict[str, Any]] = field(default_factory=list)
     _source_dir: str = field(default="", repr=False, compare=False)
 
@@ -263,6 +320,13 @@ class PlateProcessSpec:
             raise ValueError("prefill.mix_repetitions must be >= 0")
         if self.dilution and self.dilution.mix_repetitions < 0:
             raise ValueError("dilution.mix_repetitions must be >= 0")
+        if self.csv_plate_series:
+            dis = self.csv_plate_series.dissolution
+            if dis.mix_repetitions < 0:
+                raise ValueError("csv_plate_series.dissolution.mix_repetitions must be >= 0")
+            for i, dil in enumerate(self.csv_plate_series.dilutions, start=1):
+                if dil.mix_repetitions < 0:
+                    raise ValueError(f"csv_plate_series.dilutions[{i}].mix_repetitions must be >= 0")
         for idx, stage in enumerate(self.stages):
             if not isinstance(stage, dict):
                 raise ValueError(f"stages[{idx}] must be an object")
@@ -284,14 +348,14 @@ class PlateProcessSpec:
                     raise ValueError(f"stages[{idx}].mix_repetitions must be >= 0")
         if (
             not self.stages
-            and
-            self.prefill is None
+            and self.csv_plate_series is None
+            and self.prefill is None
             and self.dissolve is None
             and self.transfer is None
             and self.transfer_2 is None
             and self.dilution is None
         ):
-            raise ValueError("At least one of prefill/dissolve/transfer/transfer_2/dilution must be provided")
+            raise ValueError("At least one of csv_plate_series/stages/prefill/dissolve/transfer/transfer_2/dilution must be provided")
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -319,6 +383,7 @@ class PlateProcessSpec:
             prefill=DilutionSpec(**data["prefill"]) if data.get("prefill") is not None else None,
             transfer_2=TransferSpec(**data["transfer_2"]) if data.get("transfer_2") is not None else None,
             dilution=DilutionSpec(**data["dilution"]) if data.get("dilution") is not None else None,
+            csv_plate_series=_parse_csv_plate_series(data["csv_plate_series"]) if data.get("csv_plate_series") is not None else None,
             stages=data.get("stages", []) or [],
         )
 
@@ -348,6 +413,28 @@ def _set_location(
 
 def _delay_step(seconds: float, name: str) -> WorkflowStep:
     return WorkflowStep("delay", {"seconds": seconds}, name=name, capture_result=False)
+
+
+def _resolve_path(base_dir: Optional[Path], token: str) -> Path:
+    path = Path(token)
+    if not path.is_absolute() and base_dir is not None:
+        path = base_dir / path
+    return path
+
+
+def _load_volume_matrix(path: Path) -> Dict[str, float]:
+    # Fixed format: 8 rows (A-H) x 12 columns (1-12)
+    rows = [line.strip() for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+    matrix = [[float(cell.strip()) for cell in row.split(",")] for row in rows]
+
+    if len(matrix) != 8 or any(len(row) != 12 for row in matrix):
+        raise ValueError(f"{path}: expected 8 rows x 12 columns")
+
+    well_volumes: Dict[str, float] = {}
+    for r in range(8):
+        for c in range(12):
+            well_volumes[_well_from_row_col(r, c)] = matrix[r][c]
+    return well_volumes
 
 
 def _compile_dissolve_for_well(
@@ -599,6 +686,239 @@ def compile_plate_process_steps(spec: PlateProcessSpec) -> List[WorkflowStep]:
     )
 
     wells = resolve_well_selection(spec.sample_num, spec.well_selection)
+
+    if spec.csv_plate_series is not None:
+        op = spec.csv_plate_series
+        dissolution_cfg = op.dissolution
+        dissolution_plate = dissolution_cfg.plate
+        dissolution_by_well = _load_volume_matrix(_resolve_path(base_dir, f"{dissolution_plate}.csv"))
+        dilution_steps = op.dilutions
+        dilution_by_well = [_load_volume_matrix(_resolve_path(base_dir, f"{item.plate}.csv")) for item in dilution_steps]
+
+        for well in wells:
+            _set_location(
+                steps,
+                name=f"{well}_tip_loc",
+                labware_nickname=spec.tiprack_nickname,
+                position=well,
+                top=0,
+            )
+            steps.append(
+                WorkflowStep("pick_up_tip", {"pip_name": spec.pipette_name}, name=f"{well}_pickup_tip", capture_result=False)
+            )
+
+            # Prefill all downstream plates first for this well-series before any dissolution/transfer.
+            for idx, dilutions in enumerate(dilution_by_well, start=1):
+                dilution_volume = dilutions[well]
+                if dilution_volume <= 0:
+                    continue
+
+                target = dilution_steps[idx - 1]
+                destination_plate = target.plate
+                prefill_volume = 300.0 - dilution_volume
+                if target.prefill and prefill_volume > 0:
+                    _set_location(
+                        steps,
+                        name=f"{well}_prefill{idx}_source_loc",
+                        labware_nickname=op.solvent_labware,
+                        position=op.solvent_well,
+                        bottom=op.solvent_bottom,
+                    )
+                    steps.append(
+                        WorkflowStep("move_to_pip", {"pip_name": spec.pipette_name}, name=f"{well}_prefill{idx}_move_source", capture_result=False)
+                    )
+                    steps.append(
+                        WorkflowStep(
+                            "aspirate",
+                            {"pip_name": spec.pipette_name, "volume": prefill_volume},
+                            name=f"{well}_prefill{idx}_asp",
+                            capture_result=False,
+                        )
+                    )
+                    if target.delay_seconds:
+                        steps.append(_delay_step(target.delay_seconds, f"{well}_prefill{idx}_delay_a"))
+                    _set_location(
+                        steps,
+                        name=f"{well}_prefill{idx}_target_loc",
+                        labware_nickname=destination_plate,
+                        position=well,
+                        bottom=op.transfer_destination_bottom,
+                    )
+                    steps.append(
+                        WorkflowStep("move_to_pip", {"pip_name": spec.pipette_name}, name=f"{well}_prefill{idx}_move_target", capture_result=False)
+                    )
+                    steps.append(
+                        WorkflowStep(
+                            "dispense",
+                            {"pip_name": spec.pipette_name, "volume": prefill_volume},
+                            name=f"{well}_prefill{idx}_disp",
+                            capture_result=False,
+                        )
+                    )
+                    if target.delay_seconds:
+                        steps.append(_delay_step(target.delay_seconds, f"{well}_prefill{idx}_delay_b"))
+
+            dissolution_volume = dissolution_by_well[well]
+            if dissolution_volume > 0:
+                _set_location(
+                    steps,
+                    name=f"{well}_dissolve_source_loc",
+                    labware_nickname=op.solvent_labware,
+                    position=op.solvent_well,
+                    bottom=op.solvent_bottom,
+                )
+                steps.append(
+                    WorkflowStep("move_to_pip", {"pip_name": spec.pipette_name}, name=f"{well}_dissolve_move_source", capture_result=False)
+                )
+                steps.append(
+                    WorkflowStep(
+                        "aspirate",
+                        {"pip_name": spec.pipette_name, "volume": dissolution_volume},
+                        name=f"{well}_dissolve_asp",
+                        capture_result=False,
+                    )
+                )
+                if dissolution_cfg.delay_seconds:
+                    steps.append(_delay_step(dissolution_cfg.delay_seconds, f"{well}_dissolve_delay_a"))
+                _set_location(
+                    steps,
+                    name=f"{well}_dissolve_target_loc",
+                    labware_nickname=dissolution_plate,
+                    position=well,
+                    bottom=op.dissolution_target_bottom,
+                )
+                steps.append(
+                    WorkflowStep("move_to_pip", {"pip_name": spec.pipette_name}, name=f"{well}_dissolve_move_target", capture_result=False)
+                )
+                steps.append(
+                    WorkflowStep(
+                        "dispense",
+                        {"pip_name": spec.pipette_name, "volume": dissolution_volume},
+                        name=f"{well}_dissolve_disp",
+                        capture_result=False,
+                    )
+                )
+                if dissolution_cfg.delay_seconds:
+                    steps.append(_delay_step(dissolution_cfg.delay_seconds, f"{well}_dissolve_delay_b"))
+                for mix_idx in range(dissolution_cfg.mix_repetitions):
+                    steps.append(
+                        WorkflowStep(
+                            "aspirate",
+                            {"pip_name": spec.pipette_name, "volume": dissolution_cfg.mix_volume_ul},
+                            name=f"{well}_dissolve_mix{mix_idx+1}_asp",
+                            capture_result=False,
+                        )
+                    )
+                    if dissolution_cfg.delay_seconds:
+                        steps.append(_delay_step(dissolution_cfg.delay_seconds, f"{well}_dissolve_mix{mix_idx+1}_delay_a"))
+                    steps.append(
+                        WorkflowStep(
+                            "dispense",
+                            {"pip_name": spec.pipette_name, "volume": dissolution_cfg.mix_volume_ul},
+                            name=f"{well}_dissolve_mix{mix_idx+1}_disp",
+                            capture_result=False,
+                        )
+                    )
+                    if dissolution_cfg.delay_seconds:
+                        steps.append(_delay_step(dissolution_cfg.delay_seconds, f"{well}_dissolve_mix{mix_idx+1}_delay_b"))
+
+            if dissolution_cfg.blow_out:
+                steps.append(
+                    WorkflowStep(
+                        "blow_out",
+                        {"pip_name": spec.pipette_name},
+                        name=f"{well}_dissolve_blow_out",
+                        capture_result=False,
+                    )
+                )
+
+            source_plate = dissolution_plate
+            for idx, dilutions in enumerate(dilution_by_well, start=1):
+                target = dilution_steps[idx - 1]
+                destination_plate = target.plate
+                dilution_volume = dilutions[well]
+                if dilution_volume > 0:
+                    _set_location(
+                        steps,
+                        name=f"{well}_transfer{idx}_source_loc",
+                        labware_nickname=source_plate,
+                        position=well,
+                        bottom=op.transfer_source_bottom,
+                    )
+                    if target.delay_seconds:
+                        steps.append(_delay_step(target.delay_seconds, f"{well}_transfer{idx}_delay_a"))
+                    steps.append(
+                        WorkflowStep(
+                            "aspirate",
+                            {"pip_name": spec.pipette_name, "volume": dilution_volume},
+                            name=f"{well}_transfer{idx}_asp",
+                            capture_result=False,
+                        )
+                    )
+                    if op.transfer_source_lift_top is not None:
+                        _set_location(
+                            steps,
+                            name=f"{well}_transfer{idx}_source_lift",
+                            labware_nickname=source_plate,
+                            position=well,
+                            top=op.transfer_source_lift_top,
+                        )
+                    if target.delay_seconds:
+                        steps.append(_delay_step(target.delay_seconds, f"{well}_transfer{idx}_delay_b"))
+                    _set_location(
+                        steps,
+                        name=f"{well}_transfer{idx}_dest_loc",
+                        labware_nickname=destination_plate,
+                        position=well,
+                        bottom=op.transfer_destination_bottom,
+                    )
+                    steps.append(
+                        WorkflowStep(
+                            "dispense",
+                            {"pip_name": spec.pipette_name, "volume": dilution_volume},
+                            name=f"{well}_transfer{idx}_disp",
+                            capture_result=False,
+                        )
+                    )
+                    for mix_idx in range(target.mix_repetitions):
+                        steps.append(
+                            WorkflowStep(
+                                "aspirate",
+                                {"pip_name": spec.pipette_name, "volume": target.mix_volume_ul},
+                                name=f"{well}_transfer{idx}_mix{mix_idx+1}_asp",
+                                capture_result=False,
+                            )
+                        )
+                        if target.delay_seconds:
+                            steps.append(_delay_step(target.delay_seconds, f"{well}_transfer{idx}_mix{mix_idx+1}_delay_a"))
+                        steps.append(
+                            WorkflowStep(
+                                "dispense",
+                                {"pip_name": spec.pipette_name, "volume": target.mix_volume_ul},
+                                name=f"{well}_transfer{idx}_mix{mix_idx+1}_disp",
+                                capture_result=False,
+                            )
+                        )
+                        if target.delay_seconds:
+                            steps.append(_delay_step(target.delay_seconds, f"{well}_transfer{idx}_mix{mix_idx+1}_delay_b"))
+                    if target.blow_out:
+                        steps.append(
+                            WorkflowStep(
+                                "blow_out",
+                                {"pip_name": spec.pipette_name},
+                                name=f"{well}_transfer{idx}_blow_out",
+                                capture_result=False,
+                            )
+                        )
+
+                source_plate = destination_plate
+
+            steps.append(
+                WorkflowStep("drop_tip", {"pip_name": spec.pipette_name}, name=f"{well}_drop_tip", capture_result=False)
+            )
+
+        return steps
+
     for well in wells:
         _set_location(
             steps,
