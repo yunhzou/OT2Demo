@@ -1,17 +1,37 @@
 import paramiko
 import time
+import os
+from pathlib import Path
+import paramiko.config
 
-import paramiko
-import time
-import re
 
 class SSHClient:
-    def __init__(self, hostname, username, key_file_path):
+    def __init__(self, hostname=None, username=None, key_file_path=None, host_alias=None, password=None):
         self.hostname = hostname
         self.username = username
         self.key_file_path = key_file_path
+        self.host_alias = host_alias
+        self.password = password
         self.ssh_client = None
         self.python_session = None
+        self._config_host()
+
+    def _config_host(self):
+        if (self.hostname is None) and (self.host_alias is None):
+            raise ValueError("Both hostname and hostalias is None, invalid")
+        if self.host_alias:
+            ssh_config = self._load_ssh_config()
+            self.hostname=ssh_config["hostname"]
+            self.username=ssh_config["user"]
+            self.key_file_path=ssh_config["identityfile"][0]
+
+    def _load_ssh_config(self):
+        ssh_config_file = Path.home()/".ssh"/"config"
+        config = paramiko.config.SSHConfig()
+        with open(ssh_config_file) as f:
+            config.parse(f)
+        # print(config.lookup(self.host_alias))
+        return config.lookup(self.host_alias)
 
     def connect(self):
         """Establish SSH connection and start Python terminal"""
@@ -19,7 +39,7 @@ class SSHClient:
         self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         
         # Use the private key for authentication
-        private_key = paramiko.RSAKey.from_private_key_file(self.key_file_path)
+        private_key = paramiko.RSAKey.from_private_key_file(self.key_file_path, password=self.password)
         self.ssh_client.connect(hostname=self.hostname, username=self.username, pkey=private_key)
         
         # Start a persistent Python interactive session
@@ -67,22 +87,4 @@ class SSHClient:
         if self.ssh_client is not None:
             self.ssh_client.close()
 
-if __name__ == "__main__":
-    # Instantiate and connect with the private key
-    ssh_client = SSHClient(
-        hostname="169.254.195.156",
-        username="root",
-        key_file_path="ot2_ssh_key"  # Path to your private key file
-    )
-    ssh_client.connect()
 
-    # Send each line of code to the Python terminal
-    ssh_client.invoke("import opentrons.execute")
-    ssh_client.invoke("protocol = opentrons.execute.get_protocol_api('2.11')")
-    output = ssh_client.invoke("protocol.home()")
-
-    # Print the output of the `protocol.home()` command
-    print("Output of protocol.home():", output)
-
-    # Close the session
-    ssh_client.close()

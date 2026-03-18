@@ -1,0 +1,98 @@
+{
+  "host_alias": "ot2_training",
+  "password": "accelerate",
+  "simulation": true,
+  "sample_num": 96,
+  "well_selection": [],
+  "pipette_name": "p300",
+  "tiprack_nickname": "tip_300_96_1",
+  "labware": [
+    {
+      "nickname": "plate_96_dissolution",
+      "location": "1",
+      "ot_default": true,
+      "loadname": "corning_96_wellplate_360ul_flat",
+      "config": {},
+      "config_path": ""
+    },
+    {
+      "nickname": "plate_96_dilution_1",
+      "location": "2",
+      "ot_default": true,
+      "loadname": "corning_96_wellplate_360ul_flat",
+      "config": {},
+      "config_path": ""
+    },
+    {
+      "nickname": "resovir",
+      "location": "5",
+      "ot_default": true,
+      "loadname": "agilent_1_reservoir_290ml",
+      "config": {},
+      "config_path": ""
+    },
+    {
+      "nickname": "plate_96_dilution_2",
+      "location": "3",
+      "ot_default": true,
+      "loadname": "corning_96_wellplate_360ul_flat",
+      "config": {},
+      "config_path": ""
+    },
+    {
+      "nickname": "tip_300_96_1",
+      "location": "4",
+      "ot_default": true,
+      "loadname": "opentrons_96_tiprack_300ul",
+      "config": {},
+      "config_path": ""
+    }
+  ],
+  "instrument": {
+    "nickname": "p300",
+    "instrument_name": "p300_single_gen2",
+    "mount": "left",
+    "ot_default": true,
+    "config": {}
+  },
+  "stages": [],
+  "prefill": null,
+  "dissolve": null,
+  "transfer": null,
+  "transfer_2": null,
+  "dilution": null,
+  "csv_plate_series": {
+    "dissolution": {
+      "plate": "plate_96_dissolution",
+      "mix_repetitions": 3,
+      "mix_volume_ul": 200,
+      "delay_seconds": 1,
+      "blow_out": false
+    },
+    "dilutions": [
+      {
+        "plate": "plate_96_dilution_1",
+        "prefill": true,
+        "mix_repetitions": 3,
+        "mix_volume_ul": 200,
+        "delay_seconds": 1,
+        "blow_out": true
+      },
+      {
+        "plate": "plate_96_dilution_2",
+        "prefill": false,
+        "mix_repetitions": 0,
+        "mix_volume_ul": 0,
+        "delay_seconds": 0.5,
+        "blow_out": true
+      }
+    ],
+    "solvent_labware": "resovir",
+    "solvent_well": "A1",
+    "solvent_bottom": 5,
+    "dissolution_target_bottom": 1,
+    "transfer_source_bottom": 3,
+    "transfer_source_lift_top": 5,
+    "transfer_destination_bottom": 3
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "nickname": "tip_300_96_1",
+  "loadname": "opentrons_96_tiprack_300ul",
+  "location": "8",
+  "ot_default": true,
+  "config": {
+    "tip_status": [
+      ["clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean"],
+      ["clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean"],
+      ["clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean"],
+      ["clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean"],
+      ["clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean"],
+      ["clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean"],
+      ["clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean"],
+      ["clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean", "clean"]
+    ]
+  }
+}

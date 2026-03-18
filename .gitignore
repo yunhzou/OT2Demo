@@ -1,4 +1,9 @@
 /__pycache__/
+**/__pycache__/
+*.py[cod]
+workflow_runs/
+.idea/
+.vscode/
 .env
 credentials.json
 token_drive_v3.pickle
