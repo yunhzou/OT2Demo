@@ -10,7 +10,8 @@ from matterlab_opentrons.experiment_spec import (
 )
 
 
-DEFAULT_SPEC_PATH = Path("demo/plate_process_spec.json")
+# DEFAULT_SPEC_PATH = Path("demo/plate_1-2-3.json")
+DEFAULT_SPEC_PATH = Path("demo/plate_1-2.json")
 
 
 def write_default_spec(path: Path = DEFAULT_SPEC_PATH) -> Path:
